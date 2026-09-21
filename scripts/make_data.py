@@ -10,7 +10,7 @@
     courses.csv         100  门课程
     schedules.csv       500+ 条课程安排（同一教室同一时间不冲突）
     canteens.csv        5    个食堂
-    meal_records.csv    3000 条就餐记录（午餐高峰 + 工作日/周末/假期不同模式）
+    meal_records.csv    3000 条就餐记录（严格落在各食堂营业时间内 + 午餐高峰）
     jobs.csv            100  个企业岗位
     skills.csv          30   个技能
     course_skills.csv   300  条课程—技能关系
@@ -157,31 +157,111 @@ PUBLIC_COURSE_NAMES = {
     "管理学原理", "经济学基础",
 }
 
-# 食堂：(名称, 位置, 容量, 窗口数, 开门, 关门, 人气系数[仅生成用，不写入 CSV])
+# 食堂基础档案（学校真实数据）
+# 每个食堂包含：
+#   name/location/capacity/window_count/open_time/close_time —— 写入 canteens.csv 的真实档案
+#   share          —— 人气系数（仅生成用，不写入 CSV）
+#   service_windows—— 真实营业时段（用于校验就餐记录必须落在营业时间内）
+#   hours          —— 各日型实际采集就餐记录的小时（必须落在 service_windows 内）
+# 说明：
+#   * 一食堂 06:00-20:30 为正餐营业时间，部分档口延长至 21:30 供应夜宵（21 点记一条 other 记录）
+#   * 琼阁苑餐厅 07:00-14:00、16:30-20:00，中间 14:00-16:30 闭餐休息，仅供应正餐，无夜宵
+#   * 佳姐美食驿站 / 红房子餐饮驿站 全天 07:00-20:00，非正餐时段（10/15/16 点）也供餐
 CANTEENS = [
-    ("一食堂", "东区宿舍旁", 1200, 32, "06:30", "20:30", 1.00),
-    ("二食堂", "教学区中心广场", 900, 24, "06:30", "21:00", 0.86),
-    ("琼阁苑", "西区体育场旁", 800, 20, "07:00", "20:00", 0.72),
-    ("红房子", "北区图书馆旁", 450, 8, "07:00", "19:30", 0.38),
-    ("佳姐美食驿站", "学生活动中心一层", 600, 16, "07:00", "21:30", 0.55),
+    {
+        "name": "一食堂",
+        "location": "篮球场北侧，AB栋学生宿舍片区旁，东区宿舍核心区域",
+        "capacity": 1200,
+        "window_count": 32,
+        "open_time": "06:00",
+        "close_time": "20:30",
+        "share": 1.00,
+        "service_windows": (("06:00", "20:30"), ("20:30", "21:30")),
+        "hours": {
+            "weekday": (6, 11, 12, 13, 17, 18, 19, 21),
+            "weekend": (8, 9, 11, 12, 13, 17, 18, 21),
+            "holiday": (8, 9, 11, 12, 13, 17, 18, 19),
+        },
+    },
+    {
+        "name": "二食堂",
+        "location": "篮球场东侧，紧邻AB栋宿舍群，与一食堂同属宿舍-篮球场片区",
+        "capacity": 900,
+        "window_count": 24,
+        "open_time": "06:00",
+        "close_time": "20:30",
+        "share": 0.86,
+        "service_windows": (("06:00", "20:30"),),
+        "hours": {
+            "weekday": (6, 7, 11, 12, 13, 17, 18, 19),
+            "weekend": (8, 9, 11, 12, 13, 17, 18, 19),
+            "holiday": (8, 9, 11, 12, 13, 17, 18, 19),
+        },
+    },
+    {
+        "name": "琼阁苑餐厅",
+        "location": "正门保安处（保卫室）旁，入校主路侧边，紧靠校门入口",
+        "capacity": 600,
+        "window_count": 20,
+        "open_time": "07:00",
+        "close_time": "20:00",
+        "share": 0.72,
+        "service_windows": (("07:00", "14:00"), ("16:30", "20:00")),
+        "hours": {
+            "weekday": (7, 8, 11, 12, 13, 17, 18, 19),
+            "weekend": (8, 9, 11, 12, 13, 17, 18, 19),
+            "holiday": (8, 9, 11, 12, 13, 17, 18, 19),
+        },
+    },
+    {
+        "name": "佳姐美食驿站",
+        "location": "正门邮政快递点旁，老校门片区，邮政网点同侧沿街",
+        "capacity": 350,
+        "window_count": 10,
+        "open_time": "07:00",
+        "close_time": "20:00",
+        "share": 0.60,
+        "service_windows": (("07:00", "20:00"),),
+        "hours": {
+            "weekday": (7, 10, 11, 12, 13, 15, 17, 18),
+            "weekend": (8, 9, 11, 12, 13, 16, 17, 18),
+            "holiday": (9, 11, 12, 13, 15, 16, 17, 18),
+        },
+    },
+    {
+        "name": "红房子餐饮驿站",
+        "location": "正门邮政快递点周边，紧邻佳姐美食驿站，同属校门邮政商圈",
+        "capacity": 400,
+        "window_count": 12,
+        "open_time": "07:00",
+        "close_time": "20:00",
+        "share": 0.52,
+        "service_windows": (("07:00", "20:00"),),
+        "hours": {
+            "weekday": (8, 11, 12, 13, 16, 17, 18, 19),
+            "weekend": (8, 9, 11, 12, 13, 16, 17, 18),
+            "holiday": (9, 11, 12, 13, 16, 17, 18, 19),
+        },
+    },
 ]
 
-# 就餐时段与小时（工作日早餐提前、周末/假期早餐推后）
+# 就餐小时 → 时段（"other" 覆盖课间加餐、下午茶与夜宵）
 HOUR_SLOT = {
-    7: "breakfast", 8: "breakfast", 9: "breakfast",
+    6: "breakfast", 7: "breakfast", 8: "breakfast", 9: "breakfast",
+    10: "other",
     11: "lunch", 12: "lunch", 13: "lunch",
+    15: "other", 16: "other",
     17: "dinner", 18: "dinner", 19: "dinner",
+    21: "other",
 }
-ACTIVE_HOURS = {
-    "weekday": (7, 8, 11, 12, 13, 17, 18, 19),
-    "weekend": (8, 9, 11, 12, 13, 17, 18, 19),
-    "holiday": (8, 9, 11, 12, 13, 17, 18, 19),
-}
-# 人流形状系数：午餐 11:00-13:00 形成明显高峰（12 点最高）
+# 人流形状系数：午餐 11:00-13:00 形成明显高峰（12 点最高），夜宵/非正餐时段明显偏低
 BASE_FACTORS = {
-    "weekday": {7: 0.30, 8: 0.36, 11: 0.85, 12: 1.00, 13: 0.62, 17: 0.66, 18: 0.78, 19: 0.45},
-    "weekend": {8: 0.20, 9: 0.30, 11: 0.72, 12: 0.92, 13: 0.70, 17: 0.58, 18: 0.68, 19: 0.60},
-    "holiday": {8: 0.12, 9: 0.18, 11: 0.42, 12: 0.55, 13: 0.40, 17: 0.34, 18: 0.40, 19: 0.34},
+    "weekday": {6: 0.22, 7: 0.30, 8: 0.36, 10: 0.35, 11: 0.85, 12: 1.00, 13: 0.62,
+                15: 0.30, 16: 0.34, 17: 0.66, 18: 0.78, 19: 0.45, 21: 0.22},
+    "weekend": {8: 0.20, 9: 0.30, 10: 0.28, 11: 0.72, 12: 0.92, 13: 0.70,
+                15: 0.34, 16: 0.38, 17: 0.58, 18: 0.68, 19: 0.60, 21: 0.20},
+    "holiday": {8: 0.12, 9: 0.18, 10: 0.16, 11: 0.42, 12: 0.55, 13: 0.40,
+                15: 0.22, 16: 0.26, 17: 0.34, 18: 0.40, 19: 0.34, 21: 0.10},
 }
 DAY_FACTOR = {"weekday": (0.92, 1.08), "weekend": (0.90, 1.10), "holiday": (0.88, 1.12)}
 
@@ -630,18 +710,35 @@ def gen_schedules(courses, classrooms):
 
 def gen_canteens():
     rows = []
-    for canteen_id, (name, location, capacity, windows, open_time, close_time, _share) in enumerate(CANTEENS, start=1):
+    for canteen_id, canteen in enumerate(CANTEENS, start=1):
         rows.append({
             "canteen_id": canteen_id,
-            "canteen_name": name,
-            "location": location,
-            "capacity": capacity,
-            "window_count": windows,
-            "open_time": open_time,
-            "close_time": close_time,
+            "canteen_name": canteen["name"],
+            "location": canteen["location"],
+            "capacity": canteen["capacity"],
+            "window_count": canteen["window_count"],
+            "open_time": canteen["open_time"],
+            "close_time": canteen["close_time"],
             "status": "open",
         })
     return rows
+
+
+def to_minutes(time_text):
+    """'HH:MM' -> 分钟数，用于营业时段判断。"""
+    hour, minute = time_text.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def service_windows(canteen):
+    """把 service_windows 转成 (起始分钟, 结束分钟) 列表。"""
+    return [(to_minutes(start), to_minutes(end)) for start, end in canteen["service_windows"]]
+
+
+def in_business_hours(canteen, hour):
+    """记录小时的起点必须落在该食堂营业时段内（含一食堂夜宵延长时段）。"""
+    minute = hour * 60
+    return any(start <= minute < end for start, end in service_windows(canteen))
 
 
 def day_mode(day):
@@ -652,39 +749,45 @@ def day_mode(day):
     return "weekday"
 
 
-def gen_meal_records(canteens):
-    """3000 条就餐记录：75 天 × 8 个时段 × 5 个食堂，午餐存在明显高峰。"""
+def gen_meal_records():
+    """3000 条就餐记录：75 天 × 每天 8 个采集小时 × 5 个食堂。
+
+    每个食堂按自己的营业时段取采集小时（琼阁苑午休 14:00-16:30 不生成记录、
+    闭餐早的时段不生成夜宵；一食堂 21 点只记一条夜宵 other 记录），
+    午餐 11:00-13:00 形成明显高峰。
+    """
     records = []
     record_id = 0
     day = TERM_START
     while day <= TERM_END:
         mode = day_mode(day)
-        hours = ACTIVE_HOURS[mode]
         factor_low, factor_high = DAY_FACTOR[mode]
         day_factor = random.uniform(factor_low, factor_high)
-        for hour in hours:
-            slot = HOUR_SLOT[hour]
-            for canteen_id, canteen in enumerate(canteens, start=1):
-                share = CANTEENS[canteen_id - 1][6]
+        for canteen_id, canteen in enumerate(CANTEENS, start=1):
+            capacity = canteen["capacity"]
+            for hour in canteen["hours"][mode]:
                 occupancy = (
-                    BASE_FACTORS[mode][hour] * share * PEAK_OCCUPANCY
+                    BASE_FACTORS[mode][hour] * canteen["share"] * PEAK_OCCUPANCY
                     * day_factor * random.uniform(0.94, 1.06)
                 )
-                people = max(0, int(round(canteen["capacity"] * occupancy)))
-                wait = 1.0 + 24.0 * (people / canteen["capacity"]) ** 1.8 * random.uniform(0.95, 1.05)
+                people = max(0, int(round(capacity * occupancy)))
+                wait = 1.0 + 24.0 * (people / capacity) ** 1.8 * random.uniform(0.95, 1.05)
                 record_id += 1
                 records.append({
                     "record_id": record_id,
                     "canteen_id": canteen_id,
                     "record_date": day.isoformat(),
                     "record_hour": hour,
-                    "time_slot": slot,
+                    "time_slot": HOUR_SLOT[hour],
                     "people_count": people,
                     "wait_minutes": round(wait, 1),
                     "capacity": canteen["capacity"],
                     "source": "simulated",
                 })
         day += timedelta(days=1)
+    records.sort(key=lambda row: (row["record_date"], row["record_hour"], row["canteen_id"]))
+    for record_id, row in enumerate(records, start=1):
+        row["record_id"] = record_id
     return records
 
 
@@ -872,7 +975,7 @@ def generate_all():
     assign_sessions(courses)
     schedules = gen_schedules(courses, classrooms)
     canteens = gen_canteens()
-    meal_records = gen_meal_records(canteens)
+    meal_records = gen_meal_records()
     jobs, job_skills = gen_jobs_and_job_skills(skills)
     course_skills = gen_course_skills(courses, skills)
     return {
@@ -1182,7 +1285,7 @@ class Checker:
 
     # --- 6. 食堂 --------------------------------------------------------
     def check_canteens(self, files):
-        print("\n--- 6. 食堂高峰与工作日/周末模式检查 ---")
+        print("\n--- 6. 食堂档案 / 营业时间 / 高峰与模式检查 ---")
         records = files["meal_records.csv"]
         canteens = files["canteens.csv"]
         canteen_name = {r["canteen_id"]: r["canteen_name"] for r in canteens}
@@ -1205,6 +1308,24 @@ class Checker:
         self.check(not over_capacity, "就餐人数均不超过食堂容量（越界 {} 条）".format(len(over_capacity)))
         bad_wait = [r for r in records if float(r["wait_minutes"]) < 0]
         self.check(not bad_wait, "等待时间均 >= 0")
+
+        # 6.0 就餐记录必须落在对应食堂的营业时间内，时段标记与小时一致
+        canteen_of_id = {str(index): canteen for index, canteen in enumerate(CANTEENS, start=1)}
+        outside_hours = [
+            r for r in records
+            if not in_business_hours(canteen_of_id[r["canteen_id"]], int(r["record_hour"]))
+        ]
+        self.check(
+            not outside_hours,
+            "就餐记录均落在对应食堂营业时间内（越界 {} 条）".format(len(outside_hours)),
+        )
+        for item in outside_hours[:3]:
+            self.info("{} {}:00 people={}".format(
+                canteen_name[item["canteen_id"]], item["record_hour"], item["people_count"]))
+        bad_slot = [
+            r for r in records if HOUR_SLOT[int(r["record_hour"])] != r["time_slot"]
+        ]
+        self.check(not bad_slot, "time_slot 与就餐小时一致（异常 {} 条）".format(len(bad_slot)))
 
         # 6.1 每个食堂午餐高峰
         peak_ok = True
@@ -1256,6 +1377,19 @@ class Checker:
         self.check(correlation > 0.5, "拥挤度与等待时间正相关（相关系数 {:.3f}）".format(correlation))
         self.info("就餐记录天数 {}，覆盖食堂 {} 个".format(
             len({r["record_date"] for r in records}), len(canteen_name)))
+
+        # 6.5 每个食堂的营业时间与采集小时（真实档案核对）
+        for canteen_id in sorted(canteen_name):
+            canteen = canteen_of_id[canteen_id]
+            hours = sorted({int(r["record_hour"]) for r in records if r["canteen_id"] == canteen_id})
+            peak = max(
+                int(r["people_count"]) for r in records if r["canteen_id"] == canteen_id
+            )
+            self.info("{} 营业 {}~{}（{}）；采集小时 {}；最高 {} 人 / 容量 {} 人（{:.0%}）".format(
+                canteen_name[canteen_id], canteen["open_time"], canteen["close_time"],
+                "、".join("{}-{}".format(start, end) for start, end in canteen["service_windows"]),
+                ",".join(str(hour) for hour in hours), peak, capacity[canteen_id],
+                peak / capacity[canteen_id]))
 
     # --- 7. 技能关联 ----------------------------------------------------
     def check_skills(self, files):
