@@ -5,3 +5,7 @@ __pycache__/
 *.log
 .vscode/
 .idea/
+.pytest_cache/
+.tmp_test_run/
+pytest-cache-files-*/
+pytest-of-*/
