@@ -36,9 +36,7 @@
 
 &#x09;这说明后端参数校验逻辑正常工作，成功拦截了非法请求。
 
-&#x09;!\[API异常测试](images/day6-api-test.png)
-
-
+&#x09;!\[API异常测试](https://raw.githubusercontent.com/zhu536/campus-ai/main/docs/ai-collaboration/images/day6-api-test.png)
 
 4. 测试结果与提交
 
