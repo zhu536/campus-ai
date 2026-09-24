@@ -36,11 +36,11 @@
 
 &#x09;这说明后端参数校验逻辑正常工作，成功拦截了非法请求。
 
-&#x09;!\[API异常测试](https://raw.githubusercontent.com/zhu536/campus-ai/main/docs/ai-collaboration/images/day6-api-test.png)
+&#x09;!\[API异常测试](./images/day6-api-test.png)
 
 4. 测试结果与提交
 
-&#x09;单元测试：`pytest -q` 显示 \*\*68 个测试用例全部通过（68 passed）。
+&#x09;单元测试：`pytest -q` 显示 68 个测试用例全部通过（68 passed）。
 
 &#x09;Git 提交：`feat: add flask API for classrooms, canteens and industry skills`（仅新增文件，未修改前端和原有代码）。
 
