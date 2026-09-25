@@ -114,7 +114,10 @@ def list_available_classrooms(conn, params):
             "SELECT DISTINCT room_id FROM schedules"
             " WHERE semester = ? AND weekday = ? AND period_start <= ? AND period_end >= ?"
         )
-        # 区间重叠判断：已有排课的 [period_start, period_end] 与查询区间有交集即冲突。
+        # 区间重叠判断：已有排课的 [period_start, period_end] 与查询区间 [start, end]
+        # 有交集（含端点）即冲突。单节课查询（start == end，或只传 period_start 时由
+        # validators.period_range 补齐为同一节）由此退化为「该节次是否被占用」，
+        # 无需单独分支：跨节排课（如 [1,4]）落在单节上同样会被判为冲突。
         occupied_ids = {
             row["room_id"]
             for row in query_all(
@@ -449,7 +452,14 @@ def industry_skill_gap(conn, params):
         覆盖技能 = 岗位要求的技能 ∩ 该专业课程覆盖的技能
         缺口技能 = 岗位要求的技能 − 该专业课程覆盖的技能
         覆盖率   = 覆盖技能数 / 岗位要求技能总数
-        加权覆盖率 = Σ(job_skills.importance) / Σ(importance)，越重要的技能缺失扣分越多
+        加权覆盖率 = Σ(已覆盖技能的权重) / Σ(要求技能的权重)（docs/API.md 同口径）
+
+    权重取该技能在岗位要求里的**最大重要度** max(job_skills.importance)：一个技能对
+    同一岗位只有一条 job_skills 记录（importance 是「岗位×技能」的属性），按技能聚合后
+    用最大值代表「这个技能最多被要求到多重要」，因此这里的权重是数值而不是求和；
+    越重要的技能缺失，对加权覆盖率的拉低越明显。min_importance 门槛过滤只影响参与
+    统计与输出的技能，不影响「课程是否覆盖」的事实。
+
     硬性要求（is_required = 1）中未覆盖的单独列为必须补齐的缺口。
     """
     major = params.get("major")
