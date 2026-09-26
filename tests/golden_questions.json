@@ -1,0 +1,155 @@
+{
+  "description": "CampusAI 意图解析黄金问题集：question = 用户原话；answer = 期望的结构化意图。answer 的 JSON 形状与 prompts/intent_parser.md 的输出示例一致，可以直接当作模型返回的 JSON 喂给 backend.validate.validate_intent 做离线校验；带 api 的用例同时用作 mock 模型返回，验证完整调用链。",
+  "intents": [
+    "room_search",
+    "canteen_analysis",
+    "canteen_forecast",
+    "industry_skill_match",
+    "industry_skill_gap",
+    "dashboard_query",
+    "unknown"
+  ],
+  "questions": [
+    {
+      "id": "room-basic",
+      "question": "周三下午帮我找一个8个人、有投影的空教室。",
+      "answer": {
+        "intent": "room_search",
+        "weekday": 3,
+        "period_start": 5,
+        "end_period": 8,
+        "capacity": 8,
+        "projector": true
+      }
+    },
+    {
+      "id": "room-computer",
+      "question": "明天上午三四节想找一间能坐60人、带电脑的机房。",
+      "answer": {
+        "intent": "room_search",
+        "period_start": 3,
+        "end_period": 4,
+        "capacity": 60,
+        "computer": true,
+        "room_type": "机房"
+      }
+    },
+    {
+      "id": "room-building",
+      "question": "周五第1到2节有没有综合楼能坐40人的空教室？",
+      "answer": {
+        "intent": "room_search",
+        "weekday": 5,
+        "period_start": 1,
+        "end_period": 2,
+        "capacity": 40,
+        "building": "综合楼"
+      }
+    },
+    {
+      "id": "room-english",
+      "question": "Find me an available classroom on Wednesday with capacity 50 and a projector.",
+      "answer": {
+        "intent": "room_search",
+        "weekday": 3,
+        "capacity": 50,
+        "projector": true
+      }
+    },
+    {
+      "id": "canteen-analysis",
+      "question": "上周一食堂中午为什么那么挤？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "canteen_id": 1,
+        "time_slot": "lunch"
+      }
+    },
+    {
+      "id": "canteen-compare",
+      "question": "最近七天各食堂的平均等待时间对比一下。",
+      "answer": {
+        "intent": "canteen_analysis",
+        "date_from": "2025-09-08",
+        "date_to": "2025-09-14"
+      }
+    },
+    {
+      "id": "canteen-forecast",
+      "question": "预测下周三中午二食堂会有多少人。",
+      "answer": {
+        "intent": "canteen_forecast",
+        "canteen_id": 2,
+        "time_slot": "lunch",
+        "horizon_days": 7
+      }
+    },
+    {
+      "id": "canteen-forecast-date",
+      "question": "预测 2025-09-10 晚餐时段三食堂的排队时间。",
+      "answer": {
+        "intent": "canteen_forecast",
+        "canteen_id": 3,
+        "time_slot": "dinner",
+        "target_date": "2025-09-10"
+      }
+    },
+    {
+      "id": "gap-major",
+      "question": "软件工程专业的课程技能和企业岗位需求差在哪里？",
+      "answer": {
+        "intent": "industry_skill_gap",
+        "major": "软件工程"
+      }
+    },
+    {
+      "id": "gap-ai",
+      "question": "计算机科学与技术专业在人工智能行业的岗位技能缺口，只看重要度4以上的。",
+      "answer": {
+        "intent": "industry_skill_gap",
+        "major": "计算机科学与技术",
+        "industry": "人工智能",
+        "min_importance": 4
+      }
+    },
+    {
+      "id": "match-major",
+      "question": "数据科学与大数据技术专业对口岗位最需要哪些技能？",
+      "answer": {
+        "intent": "industry_skill_match",
+        "major": "数据科学与大数据技术"
+      }
+    },
+    {
+      "id": "match-city",
+      "question": "深圳的岗位对网络工程专业要求最多的技能是什么？",
+      "answer": {
+        "intent": "industry_skill_match",
+        "major": "网络工程",
+        "city": "深圳"
+      }
+    },
+    {
+      "id": "dashboard",
+      "question": "看看各行业岗位数量的整体情况。",
+      "answer": {
+        "intent": "dashboard_query",
+        "dimension": "industry"
+      }
+    },
+    {
+      "id": "unknown-weather",
+      "question": "今天天气怎么样？",
+      "answer": {
+        "intent": "unknown"
+      }
+    },
+    {
+      "id": "unknown-open",
+      "question": "帮我随便看看。",
+      "answer": {
+        "intent": "unknown"
+      }
+    }
+  ]
+}
