@@ -12,7 +12,7 @@
 
 AI 极其敏锐地发现了 10 个失败案例（F1-F10）。包括“今天中午”无法解析、“上周”被丢弃、字段命名不一致、相对日期缺少时间锚点等严重逻辑问题。
 
-!\[Day9 发现Bug](images/day9-bug-found.png)
+![Day9 发现Bug](images/day9-bug-found.png)
 
 
 
@@ -30,9 +30,9 @@ AI 接收指令后迅速止损，它坦诚地说明了它在测试文件中引�
 
 
 
-!\[AI过度重构循环轨迹](images/day9-ai-loop-trajectory.png)
+!s[AI过度重构循环轨迹](images/day9-ai-loop-trajectory.png)
 
-!\[Day9 修复验证与人工干预](images/day9-fix-verified.png)
+![Day9 修复验证与人工干预](images/day9-fix-verified.png)
 
 
 
