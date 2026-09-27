@@ -18,6 +18,7 @@
 """
 
 import ast
+import datetime
 import json
 import os
 import re
@@ -31,6 +32,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from backend import ai_parser  # noqa: E402
+from backend import time_resolver  # noqa: E402
 from backend.errors import ValidationError  # noqa: E402
 from backend.validate import (  # noqa: E402
     INTENTS,
@@ -39,6 +41,12 @@ from backend.validate import (  # noqa: E402
     render_contract,
     validate_intent,
 )
+
+#: 测试用的冻结锚点：相对日期测试一律用它，**绝不依赖 date.today()**，
+#: 否则测试会在跨天/跨年时随机失败（2026-09-27 是星期日，2025-11-14 是数据最大日期）。
+FROZEN_TODAY = datetime.date(2026, 9, 27)
+FROZEN_DATA_MAX = datetime.date(2025, 11, 14)
+FROZEN_ANCHOR = time_resolver.Anchor(today=FROZEN_TODAY, data_max_date=FROZEN_DATA_MAX)
 
 GOLDEN_PATH = os.path.join(PROJECT_ROOT, "tests", "golden_questions.json")
 PROMPT_PATH = os.path.join(PROJECT_ROOT, "prompts", "intent_parser.md")
@@ -112,7 +120,10 @@ def chat_response(answer, status_code=200, content=None):
 
 
 def make_parser(responses=(), error=None, **kwargs):
-    """构造一个「配置已注入、请求打到假 session」的 IntentParser。"""
+    """构造一个「配置已注入、请求打到假 session」的 IntentParser。
+
+    默认注入**冻结的时间锚点**，保证涉及相对日期的断言不随真实日历漂移。
+    """
     config = {
         "api_key": FAKE_API_KEY,
         "base_url": "https://ai.example.test/v1",
@@ -123,6 +134,7 @@ def make_parser(responses=(), error=None, **kwargs):
         "prompt_path": PROMPT_PATH,
     }
     session = FakeSession(responses=responses, error=error)
+    kwargs.setdefault("anchor", FROZEN_ANCHOR)
     parser = ai_parser.IntentParser(config=config, session=session, **kwargs)
     return parser, session
 
@@ -136,11 +148,109 @@ GOLDEN = golden_questions()
 GOLDEN_IDS = [item["id"] for item in GOLDEN]
 
 
-def golden_by_id(case_id):
-    for item in GOLDEN:
-        if item["id"] == case_id:
-            return item
-    raise KeyError(case_id)  # pragma: no cover
+#: 黄金用例里「待解析的时间原文」字段：由 backend/time_resolver.py 消费成具体日期，
+#: 因此它们不会（也不该）出现在 validate_intent 校验后的 params 里。
+RESOLVER_INPUT_FIELDS = ("date_text", "date_range_text")
+
+#: 黄金用例里「由 Python 解析后才出现」的元信息：不是模型输出，也不是业务字段，
+#: 而是用来断言相对日期确实被解析成了哪个字段（见 golden_resolved_targets）。
+RESOLVER_META_FIELDS = ("resolves_to",)
+
+
+def golden_answer_body(answer):
+    """黄金答案里可以喂给 validate_intent 的那部分（保留 intent，去掉时间原文与元信息）。"""
+    return {
+        key: value
+        for key, value in answer.items()
+        if key not in RESOLVER_INPUT_FIELDS + RESOLVER_META_FIELDS
+    }
+
+
+def golden_static_expected(answer):
+    """黄金答案里校验后应当原样保留的字段（去掉时间原文与元信息）。"""
+    return {
+        key: value
+        for key, value in answer.items()
+        if key != "intent" and key not in RESOLVER_INPUT_FIELDS + RESOLVER_META_FIELDS
+    }
+
+
+def golden_resolved_targets(answer):
+    """该用例声明的「相对日期应当落到哪些字段」。"""
+    return tuple(answer.get("resolves_to", ()))
+
+
+#: 期望「必须判为 unknown」的用例（结构化断言的数据来源）。
+MUST_BE_UNKNOWN = [item for item in GOLDEN if item.get("must_be_unknown")]
+
+
+# ---------------------------------------------------------------------------
+# 黄金用例判定（--golden 的输出口径，独立于真实模型，可离线断言）
+# ---------------------------------------------------------------------------
+
+def _golden_result(intent, params, degraded=False, warnings=()):
+    return {"intent": intent, "params": params, "degraded": degraded, "warnings": list(warnings)}
+
+
+def test_golden_ok_accepts_a_fully_matching_case():
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("room_search", {"capacity": 8, "has_projector": True}),
+        {"intent": "room_search", "capacity": 8, "has_projector": True},
+    )
+    assert ok, detail
+
+
+def test_golden_ok_rejects_a_wrong_intent_or_degraded_result():
+    assert ai_parser._golden_ok(
+        _golden_result("unknown", {}), {"intent": "room_search", "capacity": 8}
+    )[0] is False
+    assert ai_parser._golden_ok(
+        _golden_result("room_search", {"capacity": 8}, degraded=True),
+        {"intent": "room_search", "capacity": 8},
+    )[0] is False
+
+
+def test_golden_ok_requires_date_text_to_land_on_a_real_date():
+    """date_text 是 resolver 的输入，会被消费掉；但必须换来一个具体日期。"""
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("canteen_analysis", {"date_from": "2026-09-14", "time_slot": "lunch"}),
+        {"intent": "canteen_analysis", "date_text": "上周一", "time_slot": "lunch"},
+    )
+    assert ok, detail
+
+    # 时间被丢了（没有落成任何日期字段）→ 判定失败。
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("canteen_analysis", {"time_slot": "lunch"}),
+        {"intent": "canteen_analysis", "date_text": "上周一", "time_slot": "lunch"},
+    )
+    assert ok is False
+    assert "时间表达未落成具体日期" in detail
+
+
+def test_golden_ok_accepts_canteen_name_as_an_equivalent_of_canteen_id():
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("canteen_analysis", {"canteen_name": "一食堂"}),
+        {"intent": "canteen_analysis", "canteen_id": 1},
+    )
+    assert ok, detail
+
+
+def test_golden_ok_ignores_test_metadata_fields():
+    """resolves_to 这类给测试用的元信息不属于模型输出，不能被当成缺失参数。"""
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("canteen_analysis", {"date_from": "2026-09-14"}),
+        {"intent": "canteen_analysis", "date_text": "上周一", "resolves_to": ["date_from"]},
+    )
+    assert ok, detail
+
+
+def test_golden_ok_reports_a_missing_param_with_the_reason():
+    ok, detail = ai_parser._golden_ok(
+        _golden_result("room_search", {"capacity": 8}),
+        {"intent": "room_search", "capacity": 8, "has_projector": True},
+    )
+    assert ok is False
+    assert "has_projector" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -156,22 +266,121 @@ def test_golden_file_covers_every_intent():
 @pytest.mark.parametrize("case", GOLDEN, ids=GOLDEN_IDS)
 def test_golden_answers_pass_validation(case):
     answer = case["answer"]
-    intent, params = validate_intent(answer)
+    intent, params = validate_intent(golden_answer_body(answer))
     assert intent == answer["intent"]
     if intent == "unknown":
         assert params == {}
+        # 无关问题绝不允许携带业务参数（否则下游会拿"猜出来的条件"去查数据）。
+        assert set(answer) == {"intent"}, "{} 的答案必须只有 intent".format(case["id"])
     else:
-        assert params, "非 unknown 意图应当至少解析出一个参数：{}".format(case["id"])
-        assert set(params) <= set(SCHEMAS[intent])
-        # 除 intent 外不应有其它字段被静默丢弃（漏字段会让下游查错数据）。
-        extra = set(answer) - {"intent"}
-        assert set(params) == {key for key in extra if answer[key] is not None}
+        # 时间原文之外的字段不应被静默丢弃（漏字段会让下游查错数据）。
+        expected = golden_static_expected(answer)
+        assert set(params) == set(expected)
+        for key, value in expected.items():
+            assert params[key] == value, "{} 的 {} 被改写：{!r}".format(case["id"], key, params[key])
+        # 只有时间原文的用例也要有断言：声明了相对日期就必须声明它落到哪个字段。
+        if not expected:
+            assert golden_resolved_targets(answer), (
+                "用例 {} 既没有静态字段，也没有 resolves_to 声明".format(case["id"])
+            )
+            assert any(key in answer for key in RESOLVER_INPUT_FIELDS), (
+                "用例 {} 声明了 resolves_to 却没有时间原文".format(case["id"])
+            )
+
+
+@pytest.mark.parametrize("case", GOLDEN, ids=GOLDEN_IDS)
+def test_golden_resolver_targets_are_valid_schema_fields(case):
+    """resolves_to 声明的字段必须是该意图白名单里的日期字段。
+
+    这条断言防止「声明了一个 resolver 根本不会产出、或 schema 不认的字段」，
+    让相对日期用例的期望值始终可核对。
+    """
+    answer = case["answer"]
+    targets = golden_resolved_targets(answer)
+    assert set(targets) <= set(SCHEMAS[answer["intent"]]), (
+        "{} 的 resolves_to 超出该意图白名单".format(case["id"])
+    )
+    for field in targets:
+        assert SCHEMAS[answer["intent"]][field]["kind"] == "date", (
+            "{} 的 resolves_to 必须是日期字段：{}".format(case["id"], field)
+        )
+    if any(key in answer for key in RESOLVER_INPUT_FIELDS):
+        assert targets, "{} 有时间原文但没有 resolves_to".format(case["id"])
+
+
+def test_golden_unknown_cases_are_structured_and_explicit():
+    """「完全无关」类问题必须有 must_be_unknown 标记，且答案只含 intent。"""
+    assert MUST_BE_UNKNOWN, "黄金问题集必须至少有一个 must_be_unknown 用例"
+    unrelated = [item for item in GOLDEN if item.get("category") == "完全无关"]
+    assert len(unrelated) >= 6, "「完全无关」类用例太少，无法覆盖鲁棒性"
+    for item in unrelated:
+        assert item.get("must_be_unknown") is True, "{} 缺少 must_be_unknown 标记".format(item["id"])
+        assert item["answer"] == {"intent": "unknown"}, "{} 的答案必须只有 intent".format(item["id"])
+    # 话题边界：没有数据支撑的「域内问题」也必须 unknown，不能硬套业务意图。
+    boundary = [item for item in GOLDEN if item.get("category") == "能力边界"]
+    assert len(boundary) >= 2, "缺少「能力边界」用例"
+    for item in boundary:
+        assert item.get("must_be_unknown") is True, "{} 缺少 must_be_unknown 标记".format(item["id"])
+        assert item["answer"] == {"intent": "unknown"}
+
+
+@pytest.mark.parametrize("case", MUST_BE_UNKNOWN, ids=[item["id"] for item in MUST_BE_UNKNOWN])
+def test_offtopic_questions_must_stay_unknown(case):
+    """即使模型吐出了业务字段，无关问题也必须被收敛成纯 unknown。"""
+    parser, _ = make_parser([chat_response(case["answer"])])
+    result = parser.query(case["question"])
+    assert result["intent"] == "unknown"
+    assert result["params"] == {}
+    assert result["degraded"] is False
+
+
+def test_offtopic_with_a_valid_looking_intent_is_not_semantically_checkable():
+    """记录一个**已知边界**：白名单校验只能保证「形状合法」，不能判断「语义是否切题」。
+
+    模型偶尔会把无关问题套成 dashboard_query 并编出一个合法 dimension，
+    这时校验层无法区分它和真实诉求（没有必填字段可核对）。
+    因此「无关问题必须 unknown」靠两件事一起保证：
+        1. Prompt 的 Intent Boundaries 规则（让模型别乱套）
+        2. golden_questions.json 里的 must_be_unknown 用例（真实调用时持续盯住）
+    这里把这个边界固定下来，避免误以为校验层能兜住语义错误。
+    """
+    parser, _ = make_parser(
+        [chat_response({"intent": "dashboard_query", "dimension": "industry"})]
+    )
+    result = parser.query("推荐几只股票。")
+    assert result["intent"] == "dashboard_query", "校验层只能放行形状合法的返回"
+    assert result["degraded"] is False
+    assert result["params"] == {"dimension": "industry"}
+
+
+def test_unknown_intent_with_hallucinated_params_is_rejected():
+    """反过来，模型给 unknown 硬塞业务参数时必须拦住（猜出来的条件不能下游当真）。"""
+    parser, _ = make_parser(
+        [chat_response({"intent": "unknown", "dimension": "industry"})]
+    )
+    result = parser.query("推荐几只股票。")
+    assert result["intent"] == "unknown"
+    assert result["degraded"] is True
+    assert result["params"] == {}
+    assert result["error"]["code"] == ai_parser.ERROR_INVALID_INTENT
 
 
 def test_golden_questions_are_non_empty_strings():
     for item in GOLDEN:
         assert item["question"].strip()
         assert item["answer"]["intent"] in INTENTS
+        assert item["id"].strip()
+        assert item["category"].strip()
+
+
+def test_golden_covers_the_seven_robustness_categories():
+    """7 类鲁棒性问题（相对日期/模糊时间/人数/设备/食堂/产教/无关）都要有用例。"""
+    required = {
+        "相对日期", "模糊时间", "人数表达", "设备需求",
+        "食堂问题", "产教问题", "完全无关",
+    }
+    covered = {item["category"] for item in GOLDEN}
+    assert required <= covered, "缺少类别：{}".format(sorted(required - covered))
 
 
 # ---------------------------------------------------------------------------
@@ -180,14 +389,37 @@ def test_golden_questions_are_non_empty_strings():
 
 @pytest.mark.parametrize("case", GOLDEN, ids=GOLDEN_IDS)
 def test_parse_end_to_end_for_golden_questions(case):
-    parser, session = make_parser([chat_response(case["answer"])])
+    parser, session = make_parser([chat_response(golden_answer_body(case["answer"]))])
     result = parser.query(case["question"])
 
     assert result["degraded"] is False
     assert result["intent"] == case["answer"]["intent"]
     assert result["chart"] == ai_parser.suggest_chart(result["intent"])
     assert result["explanation"]
+    assert isinstance(result["warnings"], list)
     assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [item for item in GOLDEN if not item.get("must_be_unknown")],
+    ids=[item["id"] for item in GOLDEN if not item.get("must_be_unknown")],
+)
+def test_golden_static_fields_survive_the_full_pipeline(case):
+    """整条链路（调模型 → 解析 → 相对日期 → 校验）不能丢掉静态字段。
+
+    这是「设备/人数/时段条件被静默丢弃」问题的回归守卫：模型的返回原样喂进去，
+    校验后的参数必须还带着这些字段。相对日期用例会额外带上解析出的日期字段，
+    所以这里断言的是「包含」而不是「相等」。
+    """
+    parser, _ = make_parser([chat_response(golden_answer_body(case["answer"]))])
+    result = parser.query(case["question"])
+
+    expected = golden_static_expected(case["answer"])
+    for key, value in expected.items():
+        assert result["params"].get(key) == value, (
+            "{} 的 {} 在链路中被丢弃或改写：{!r}".format(case["id"], key, result["params"])
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -272,15 +504,22 @@ def test_weekday_is_1_to_7_and_accepts_chinese():
 
 
 def test_period_range_is_validated_and_aliased():
+    # 规范名是 period_start / period_end（与 backend/queries.py、docs/API.md 一致）。
     intent, params = validate_intent(
         {"intent": "room_search", "period_start": "5", "period_end": 8, "capacity": 8}
     )
-    assert (params["period_start"], params["end_period"]) == (5, 8)
-    assert "period_end" not in params
+    assert (params["period_start"], params["period_end"]) == (5, 8)
+
+    # Prompt 旧示例里的 end_period 仍然被当成别名收敛到规范名。
+    _, aliased = validate_intent(
+        {"intent": "room_search", "period_start": 5, "end_period": 8, "capacity": 8}
+    )
+    assert aliased["period_end"] == 8
+    assert "end_period" not in aliased
 
     with pytest.raises(ValidationError) as excinfo:
-        validate_intent({"intent": "room_search", "period_start": 6, "end_period": 5})
-    assert excinfo.value.field == "end_period"
+        validate_intent({"intent": "room_search", "period_start": 6, "period_end": 5})
+    assert excinfo.value.field == "period_end"
     assert "不能小于" in excinfo.value.message
 
     for bad in (0, 13, "第八节"):
@@ -292,13 +531,130 @@ def test_boolean_fields_are_validated():
     for value, expected in ((True, True), (1, True), ("true", True), ("需要", True),
                             (False, False), (0, False), ("false", False), ("不需要", False)):
         _, params = validate_intent(
-            {"intent": "room_search", "capacity": 10, "projector": value}
+            {"intent": "room_search", "capacity": 10, "has_projector": value}
         )
-        assert params["projector"] is expected
+        assert params["has_projector"] is expected
     for bad in ("maybe", 2, [], "yes please"):
         with pytest.raises(ValidationError) as excinfo:
-            validate_intent({"intent": "room_search", "capacity": 10, "projector": bad})
-        assert excinfo.value.field == "projector"
+            validate_intent({"intent": "room_search", "capacity": 10, "has_projector": bad})
+        assert excinfo.value.field == "has_projector"
+
+
+def test_equipment_field_names_match_the_query_layer():
+    """设备字段必须收敛成 queries.py 读取的 has_projector / has_computer。
+
+    历史 bug：validate 产出 ``projector``，而 queries 读 ``has_projector``，
+    设备筛选条件在链路上被静默丢弃 —— 模型抽对了也没用。
+    """
+    _, params = validate_intent(
+        {
+            "intent": "room_search",
+            "capacity": 10,
+            "projector": True,        # 模型常见写法
+            "need_computer": True,    # 另一种常见写法
+        }
+    )
+    assert params == {"capacity": 10, "has_projector": True, "has_computer": True}
+    assert "projector" not in params and "computer" not in params
+
+    # 规范名直接给也要能用。
+    _, params = validate_intent(
+        {"intent": "room_search", "has_projector": False, "has_computer": False}
+    )
+    assert params == {"has_projector": False, "has_computer": False}
+
+
+def test_schema_keys_are_read_by_the_real_query_functions():
+    """一致性守卫：AI 产出的字段名必须真的被业务查询函数读取。
+
+    这条测试用 AST 从 backend/queries.py 抽出每个业务函数真正 ``params.get(...)``
+    的键名，再和 SCHEMAS 比对。字段名一旦漂移（例如有人把
+    ``has_projector`` 改回 ``projector``），这里会立刻失败。
+    """
+    query_source = os.path.join(PROJECT_ROOT, "backend", "queries.py")
+    with open(query_source, "r", encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+
+    consumed = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        keys = set()
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "get"
+                and isinstance(inner.func.value, ast.Name)
+                and inner.func.value.id == "params"
+                and inner.args
+                and isinstance(inner.args[0], ast.Constant)
+            ):
+                keys.add(inner.args[0].value)
+        if keys:
+            consumed[node.name] = keys
+
+    # intent → 真正执行该意图的业务函数
+    bindings = {
+        "room_search": "list_available_classrooms",
+        "canteen_analysis": "canteen_stats",
+        "industry_skill_match": "industry_skills",
+        "industry_skill_gap": "industry_skill_gap",
+    }
+    # 查询层刻意不读、由上层处理或暂未接线的字段：
+    #   date_text / date_range_text —— 已被 time_resolver 消费成具体日期
+    #   date         —— 已解析出来，但教室查询目前只按 weekday+semester 过滤（见下方用例）
+    #   canteen_name —— 查询层只按 canteen_id 过滤（见下方用例）
+    #   sort_by      —— 排序意图（最短/最挤）目前只在解析层表达，查询层固定排序（见下方用例）
+    #   company      —— 岗位/企业维度的过滤查询层尚未接线（见下方用例）
+    #   limit / method / top_slots —— 分页、算法、展示层参数
+    allowed_gaps = {
+        "date_text", "date_range_text", "date", "canteen_name", "sort_by", "company",
+        "limit", "method", "top_slots",
+    }
+
+    assert bindings.keys() <= set(SCHEMAS)
+    for intent, function in bindings.items():
+        assert function in consumed, "{} 里找不到 {}".format(query_source, function)
+        unread = set(SCHEMAS[intent]) - consumed[function] - allowed_gaps
+        assert not unread, (
+            "意图 {} 会产出 {} 但这些字段 {} 根本不会被读取，"
+            "筛选条件会被静默丢弃".format(intent, function, sorted(unread))
+        )
+
+
+def test_known_unwired_filters_stay_documented():
+    """锁定几个「已解析但查询层还没接」的字段，避免它们被误当成已生效。
+
+    - ``date``：教室查询只按 weekday+semester 过滤
+    - ``sort_by``：食堂排序意图暂时只在解析层表达
+    - ``company``：企业维度过滤尚未接线
+    哪天业务层真接上了，这里会失败，提醒同步更新一致性守卫的 allowed_gaps。
+    """
+    query_source = os.path.join(PROJECT_ROOT, "backend", "queries.py")
+    with open(query_source, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    for field in ("date", "sort_by", "company"):
+        assert 'params.get("{}")'.format(field) not in source, (
+            "queries.py 已开始读取 {}，请更新一致性守卫的 allowed_gaps".format(field)
+        )
+
+
+def test_canteen_name_is_not_silently_accepted_as_a_filter():
+    """canteen_name 目前查询层不读 —— 必须能明确看出来，而不是假装生效。
+
+    这里锁定「查询层只认 canteen_id」这一事实；等 canteen_name 接线后，
+    这条用例会失败，提醒同步更新上一条一致性守卫的 allowed_gaps。
+    """
+    query_source = os.path.join(PROJECT_ROOT, "backend", "queries.py")
+    with open(query_source, "r", encoding="utf-8") as handle:
+        source = handle.read()
+    assert 'params.get("canteen_name")' not in source, (
+        "queries.py 已开始读取 canteen_name，请更新一致性守卫的 allowed_gaps"
+    )
+    # 校验层允许它（模型更常给出名称而不是 ID），这条通道保持打开。
+    _, params = validate_intent({"intent": "canteen_analysis", "canteen_name": "一食堂"})
+    assert params == {"canteen_name": "一食堂"}
 
 
 def test_enum_fields_are_validated():
@@ -343,13 +699,57 @@ def test_required_fields_must_be_present():
         assert excinfo.value.field == "major"
 
 
+def test_room_search_without_any_condition_warns_instead_of_vanishing():
+    """条件表达不了时保留意图并留痕，而不是把整个意图判成 unknown。
+
+    历史 bug：「有没有带空调的空教室？」→ 模型确实识别成 room_search，但平台没有
+    空调字段 → 参数被丢弃 → 报错 → 整条降级成 unknown，用户连意图都看不到。
+    """
+    warnings = []
+    intent, params = validate_intent(
+        {"intent": "room_search", "air_conditioner": True}, warnings=warnings
+    )
+    assert intent == "room_search"
+    assert params == {}
+    assert any("air_conditioner" in warning for warning in warnings)
+    assert any("没有一个平台支持的筛选条件" in warning for warning in warnings)
+
+
 def test_room_search_requires_at_least_one_condition():
+    # 「只回了一个空对象」＝没有意图证据也没有条件，仍然拒绝。
     with pytest.raises(ValidationError):
         validate_intent({"intent": "room_search"})
     with pytest.raises(ValidationError):
         validate_intent({"intent": "room_search", "params": {"capacity": None}})
-    intent, params = validate_intent({"intent": "room_search", "projector": False})
-    assert (intent, params) == ("room_search", {"projector": False})
+    # 明确的布尔条件（哪怕是 False ＝「不要投影」）本身就是有效条件。
+    intent, params = validate_intent({"intent": "room_search", "has_projector": False})
+    assert (intent, params) == ("room_search", {"has_projector": False})
+
+
+def test_unsupported_conditions_are_recorded_not_silently_dropped():
+    """白名单外的字段要被记录成警告，且绝不放过 SQL 片段。"""
+    warnings = []
+    intent, params = validate_intent(
+        {"intent": "canteen_analysis", "canteen_name": "一食堂", "menu_today": "红烧肉"},
+        warnings=warnings,
+    )
+    assert intent == "canteen_analysis"
+    assert params == {"canteen_name": "一食堂"}
+    assert any("menu_today" in warning for warning in warnings)
+
+    with pytest.raises(ValidationError):
+        validate_intent(
+            {"intent": "canteen_analysis", "evil": "'; DROP TABLE meal_records; --"}
+        )
+
+
+def test_intent_keeps_no_warnings_when_everything_is_supported():
+    warnings = []
+    intent, params = validate_intent(
+        {"intent": "room_search", "capacity": 8, "has_projector": True}, warnings=warnings
+    )
+    assert (intent, params) == ("room_search", {"capacity": 8, "has_projector": True})
+    assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +785,7 @@ def test_json_output_parsing_variants(content):
         "intent": "room_search",
         "params": {"capacity": 8},
         "degraded": False,
+        "warnings": [],
         "error": None,
     }
 
@@ -397,6 +798,7 @@ def test_nested_params_and_entities_are_flattened():
         "intent": "room_search",
         "params": {"weekday": 3, "capacity": 8},
         "degraded": False,
+        "warnings": [],
         "error": None,
     }
 
@@ -708,11 +1110,14 @@ def test_parser_source_contains_no_sql_and_no_database_access():
     assert "backend.db" not in imported
     assert ".db" not in imported
     # 只允许这些依赖（requests 调 API、dotenv 读配置、其余是标准库）。
-    # errors / validate 是 `python backend/ai_parser.py` 直接运行时的相对导入名。
+    # errors / validate / time_resolver 是 `python backend/ai_parser.py`
+    # 直接运行时的相对导入名。
+    # 注意：time_resolver 会为「数据里的最近一天」读一个 MAX(record_date) 标量，
+    # 因此它自己 import sqlite3 —— 但解析器主流程不碰业务数据，且可用注入锚点完全绕开。
     assert imported <= {
         "argparse", "json", "os", "re", "sys", "pathlib",
         "requests", "dotenv", "backend", "backend.errors", "backend.validate",
-        "errors", "validate",
+        "backend.time_resolver", "errors", "validate", "time_resolver",
     }, imported
 
     assert not re.search(

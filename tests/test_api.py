@@ -214,6 +214,13 @@ def test_available_classrooms_filters_and_free_slot(client, conn):
     expected = rooms_matching(
         conn, capacity=60, projector=1, room_type="机房", weekday=1, period_start=3, period_end=4
     )
+    # 前提：请求里的 has_computer=0 按 docs/API.md 的语义是「需要电脑」，并不是「不要电脑」，
+    # 所以机房候选里必须真的有 has_computer=1 的教室，这条断言才有意义
+    #（否则两个结果集会因为候选集本来就没有电脑教室而巧合相等）。
+    assert conn.execute(
+        "SELECT COUNT(*) FROM classrooms WHERE status = 'available'"
+        " AND room_type = '机房' AND has_computer = 1"
+    ).fetchone()[0] > 0, "测试数据里应当有机房带电脑，否则 has_computer 过滤没有被验证"
     assert data["total"] == len(expected)
     for room in data["rooms"]:
         assert room["capacity"] >= 60
@@ -231,6 +238,29 @@ def test_available_classrooms_filters_and_free_slot(client, conn):
     }
     assert busy, "测试数据里周一 3-4 节应当有排课，否则这条断言没有意义"
     assert not busy & {room["room_id"] for room in data["rooms"]}
+
+
+def test_has_projector_zero_is_not_negation(client, conn):
+    """锁定已知语义缺口：``has_projector=0`` 不是「不要投影」，而是不过滤。
+
+    queries.py 用的是 ``has_projector >= ?``，所以 0 匹配全部教室。
+    意图解析器允许用户说「找个没有投影的教室」（has_projector=false），
+    但在查询层这条条件目前等于没生效。等业务层实现真正的取反，这里会失败，
+    提醒同步更新解析层到查询层的语义映射。
+    """
+    unfiltered = queries.list_available_classrooms(conn, {"capacity": 10})
+    zero = queries.list_available_classrooms(conn, {"capacity": 10, "has_projector": 0})
+    one = queries.list_available_classrooms(conn, {"capacity": 10, "has_projector": 1})
+
+    assert zero["total"] == unfiltered["total"], "has_projector=0 目前等于不过滤（已知缺口）"
+    assert one["total"] < unfiltered["total"], "has_projector=1 必须真的起到过滤作用"
+
+    status, payload = call(
+        client, "/api/classrooms/available", capacity=10, has_projector=0, limit=100
+    )
+    assert status == 200
+    assert payload["data"]["query"]["has_projector"] is False
+    assert payload["data"]["total"] == unfiltered["total"]
 
 
 def test_available_classrooms_overlapping_period_is_excluded(client, conn):

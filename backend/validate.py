@@ -78,17 +78,23 @@ def _date(required=False):
 #: 各意图的参数白名单：字段名 → 规格。key 用小写，模型返回的 ``Weekday`` 也能被接受。
 SCHEMAS = {
     # 场景一：AI 智能找教室
+    # 设备字段用 has_projector / has_computer，与 backend/queries.py 的
+    # list_available_classrooms 读取的键名、以及 docs/API.md 的查询参数名完全一致。
+    # 这些 "_text" 字段是「待解析的时间原文」，由 backend/time_resolver.py 在
+    # 校验前替换成真正的日期字段（date / target_date / date_from + date_to）。
     "room_search": {
         "weekday": _int(1, 7),
         "period_start": _int(1, 12),
-        "end_period": _int(1, 12),
+        "period_end": _int(1, 12),
         "capacity": _int(1, 1000),
-        "projector": _bool(),
-        "computer": _bool(),
+        "has_projector": _bool(),
+        "has_computer": _bool(),
         "room_type": _enum(ROOM_TYPES),
         "building": _text(50),
         "semester": _text(30),
         "date": _date(),
+        "date_text": _text(30),
+        "date_range_text": _text(30),
         "limit": _int(1, 100),
     },
     # 场景二：食堂拥挤分析（只看历史）
@@ -97,6 +103,7 @@ SCHEMAS = {
         "canteen_name": _text(50),
         "date_from": _date(),
         "date_to": _date(),
+        "date_range_text": _text(30),
         "time_slot": _enum(TIME_SLOTS),
         "top_slots": _int(0, 4),
         "sort_by": _enum(SORT_FIELDS),
@@ -107,6 +114,7 @@ SCHEMAS = {
         "canteen_id": _int(1, 100000),
         "canteen_name": _text(50),
         "target_date": _date(),
+        "date_text": _text(30),
         "time_slot": _enum(TIME_SLOTS),
         "horizon_days": _int(1, 30),
         "method": _enum(TREND_TYPES),
@@ -139,21 +147,33 @@ SCHEMAS = {
 }
 
 #: 字段别名：同一语义的不同写法统一成规范名（只放通用、无歧义的映射）。
-#: 例：prompts/intent_parser.md 的示例用 ``end_period``，而 Flask 接口
-#: （docs/API.md / backend/validators.py）用 ``period_end``，这里把两者收敛。
+#:
+#: 规范名以 **backend/queries.py 实际读取的键名** 为准：
+#:   ``has_projector`` / ``has_computer`` / ``period_start`` / ``period_end`` / ``date_from`` / ``date_to``
+#: 这样 AI 的产出可以**直接**喂给业务函数，不需要中间再翻译一层
+#: （历史 bug：validate 产出 ``projector``，而 queries 读 ``has_projector``，
+#: 设备筛选条件被静默丢弃 —— 见 tests/test_intent.py 的一致性守卫测试）。
+#: 别名表的方向是「别名 → 规范名」，两边的写法都收在这里，模型写哪种都能落地。
 ALIASES = {
-    "period_end": "end_period",
-    "has_projector": "projector",
-    "need_projector": "projector",
-    "has_computer": "computer",
-    "need_computer": "computer",
+    # 节次区间：Prompt 旧示例写 end_period，API/DB/查询层统一用 period_end
+    "end_period": "period_end",
+    "start_period": "period_start",
+    # 设备：模型常见的 projector / need_projector 都收敛到 has_projector
+    "projector": "has_projector",
+    "need_projector": "has_projector",
+    "computer": "has_computer",
+    "need_computer": "has_computer",
+    # 人数
     "people": "capacity",
     "people_count": "capacity",
-    "start_period": "period_start",
+    # 食堂 / 预测 / 专业
     "canteen": "canteen_name",
     "forecast_date": "target_date",
     "predict_date": "target_date",
     "profession": "major",
+    # 相对日期原文（模型只抄原文，日期由 Python 解析）
+    "date_expr": "date_text",
+    "time_text": "date_text",
 }
 
 #: 意图专属别名：同一个词在不同意图里含义不同，必须分开处理。
@@ -378,11 +398,11 @@ def _canonical_field(intent, field):
 def _check_pairs(intent, params):
     """互相约束的字段：节次区间、日期区间、预测目标日期。"""
     start = params.get("period_start")
-    end = params.get("end_period")
+    end = params.get("period_end")
     if start is not None and end is not None and end < start:
         raise ValidationError(
-            "参数 end_period ({}) 不能小于 period_start ({})".format(end, start),
-            field="end_period",
+            "参数 period_end ({}) 不能小于 period_start ({})".format(end, start),
+            field="period_end",
         )
     date_from = params.get("date_from")
     date_to = params.get("date_to")
@@ -398,7 +418,7 @@ def _check_pairs(intent, params):
     )
 
 
-def validate_intent(payload):
+def validate_intent(payload, warnings=None):
     """校验 AI 返回的意图 JSON。
 
     返回 ``(intent, params)``；任何问题都抛 :class:`ValidationError`：
@@ -408,12 +428,18 @@ def validate_intent(payload):
     >>> validate_intent({"intent": "hack", "sql": "DROP TABLE"})  # doctest: +SKIP
     ValidationError: ...
 
+    ``warnings`` 传入一个 list 时，会写入「不能沉默丢弃」的提示（例如模型识别出
+    了意图、但某个筛选条件平台表达不了）。此时**保留 intent**、只丢掉那个条件，
+    由上层决定是提示用户还是降级 —— 而不是把整个意图判成 unknown
+    （历史 bug：「有没有带空调的空教室」被降级成 unknown，用户连意图都看不到了）。
+
     规则：
         1. intent 必须命中白名单（白名单外一律拒绝，不做任何猜测）
-        2. 字段必须在该意图的参数白名单内（不认识的字段直接拒绝，避免静默丢条件）
+        2. 字段必须在该意图的参数白名单内；不认识的字段被丢弃并记入 ``warnings``
         3. 字段类型/范围按 :data:`SCHEMAS` 校验；字符串不得含 SQL 片段
         4. ``unknown`` 不允许携带任何业务参数
-        5. ``room_search`` 至少要有一个筛选条件，否则等于「列出全部教室」
+        5. ``room_search`` 至少要有一个筛选条件，否则记入 ``warnings`` 而不是报错
+           （调用方确实明确说了要「找教室」，只是条件平台支持不了）
     """
     intent, params = normalize(payload)
 
@@ -426,16 +452,15 @@ def validate_intent(payload):
     _check_required(intent, params)
 
     cleaned = {}
+    unsupported = []
     for raw_field, value in params.items():
         field = _canonical_field(intent, raw_field)
         rules = schema.get(field)
-        check(
-            rules is not None,
-            "意图 {} 不支持参数 {}（允许：{}）".format(
-                intent, raw_field, "/".join(sorted(schema)) or "无"
-            ),
-            raw_field,
-        )
+        if rules is None:
+            # 白名单外的字段：SQL 片段仍然要挡（安全红线不放宽）。
+            reject_sql(value, raw_field)
+            unsupported.append(field)
+            continue
         # 同一字段既给了别名又给了规范名时，以规范名为准（先出现的别名胜出）。
         if field in cleaned and field != raw_field:
             continue
@@ -448,8 +473,20 @@ def validate_intent(payload):
 
     _check_pairs(intent, cleaned)
 
-    if intent == "room_search":
-        check(bool(cleaned), "room_search 至少需要一个筛选条件（人数/时段/设备/楼栋/教室类型）")
+    if warnings is not None:
+        for name in unsupported:
+            warnings.append(
+                "意图 {} 不支持参数 {}，已丢弃该条件".format(intent, name)
+            )
+        if intent == "room_search" and not cleaned:
+            warnings.append(
+                "识别为 room_search，但没有一个平台支持的筛选条件"
+                "（人数/时段/设备/楼栋/教室类型）"
+            )
+
+    if intent == "room_search" and not cleaned and not unsupported:
+        # 模型只回了一个空对象：没有意图证据，也没有任何条件，属于无效返回。
+        raise ValidationError("room_search 至少需要一个筛选条件（人数/时段/设备/楼栋/教室类型）")
 
     return intent, cleaned
 

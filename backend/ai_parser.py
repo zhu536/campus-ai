@@ -11,9 +11,12 @@
     2. 配置（API Key / BASE_URL / MODEL）一律从 ``.env`` 读，不写死在代码里
     3. system prompt 从 ``prompts/intent_parser.md`` 读（正式 Prompt 走 Git 留痕）
     4. 要求模型返回 JSON（``response_format={"type": "json_object"}``）并解析
-    5. 交给 :mod:`backend.validate` 做白名单与字段校验
-    6. **不连数据库、不生成 SQL**（本模块不 import sqlite3，也不 import backend.db）
-    7. 网络/HTTP/JSON/校验任何一步失败都抛 :class:`AIParserError` 或降级返回 unknown
+    5. 由 :mod:`backend.time_resolver` 把相对日期（今天/上周一/最近七天）解析成确定日期
+    6. 交给 :mod:`backend.validate` 做白名单与字段校验
+    7. **不生成 SQL、不查业务数据**：本模块不 import sqlite3，也不 import backend.db。
+       相对日期需要「数据里的最近一天」时，由 :mod:`backend.time_resolver` 自己去读
+       一个 ``MAX(record_date)`` 标量（只读、不碰业务逻辑），并且可以用注入锚点完全绕开
+    8. 网络/HTTP/JSON/校验任何一步失败都抛 :class:`AIParserError` 或降级返回 unknown
 
 命令行（便于人工核对，不会写入任何数据）::
 
@@ -35,10 +38,12 @@ import requests
 if __package__ in (None, ""):  # pragma: no cover - 仅影响命令行启动方式
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from backend.errors import ValidationError
-    from backend.validate import INTENTS, render_contract, validate_intent
+    from backend.time_resolver import default_anchor, resolve as resolve_dates
+    from backend.validate import INTENTS, normalize, render_contract, validate_intent
 else:
     from .errors import ValidationError
-    from .validate import INTENTS, render_contract, validate_intent
+    from .time_resolver import default_anchor, resolve as resolve_dates
+    from .validate import INTENTS, normalize, render_contract, validate_intent
 
 # backend/ai_parser.py → backend/ → 项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -293,12 +298,15 @@ class IntentParser:
     """
 
     def __init__(self, config=None, session=None, prompt=None, prompt_path=None,
-                 timeout=None, enrich=True, contract=True):
+                 timeout=None, enrich=True, contract=True, anchor=None):
         self._config = dict(config) if config else None
         self._session = session if session is not None else requests
         self._prompt = prompt
         self._prompt_path = prompt_path
         self._timeout = timeout
+        #: 相对日期解析的锚点。``None`` 时首次用到才推导（今天 = 系统当天，
+        #: 「最近 N 天」= 数据里的最近 N 天）；测试可注入固定锚点，不依赖真实日历。
+        self._anchor = anchor
         #: 是否在返回结果里附带「可读说明 + 建议图表」（只做映射，不额外调模型）。
         self.enrich = enrich
         #: 是否把字段契约拼到 system prompt 后面（保证模型只产出 Python 认识的字段）。
@@ -306,6 +314,13 @@ class IntentParser:
         self.last_error = None
 
     # -- 配置 ---------------------------------------------------------------
+
+    @property
+    def anchor(self):
+        """时间解析锚点（首次访问时推导：读系统当天 + 数据最大日期）。"""
+        if self._anchor is None:
+            self._anchor = default_anchor()
+        return self._anchor
 
     @property
     def config(self):
@@ -358,8 +373,8 @@ class IntentParser:
             raise AIParserError("调用 AI 接口失败（网络错误）：{}".format(exc), code=ERROR_NETWORK)
         return parse_response_text(response)
 
-    def parse(self, question, use_fallback=False):
-        """完整链路：提问 → 调模型 → 解析 JSON → 白名单与字段校验。
+    def parse(self, question, use_fallback=False, anchor=None):
+        """完整链路：提问 → 调模型 → 解析 JSON → 相对日期解析 → 白名单与字段校验。
 
         返回::
 
@@ -369,38 +384,82 @@ class IntentParser:
         ``degraded=True`` + ``error`` 说明（前端可以照常渲染一个提示）。
         """
         try:
-            return self._parse_or_raise(question)
+            return self._parse_or_raise(question, anchor=anchor)
         except (AIParserError, ValidationError) as exc:
             self.last_error = exc
             if not use_fallback:
                 raise _as_parser_error(exc)
             return _degraded_result(exc)
 
-    def _parse_or_raise(self, question):
+    def _parse_or_raise(self, question, anchor=None):
         if not isinstance(question, str) or not question.strip():
             raise AIParserError("用户问题不能为空", code=ERROR_EMPTY_QUESTION)
-        content = self.call_api(question.strip())
+        question = question.strip()
+        content = self.call_api(question)
         payload = extract_json_object(content)
+
+        # 相对日期必须由 Python 解析：模型不知道今天是几号，也不该由它编日期。
+        # 这里先把它给的「时间原文」换成确定的 YYYY-MM-DD，再进白名单校验。
+        warnings = []
+        payload = _resolve_payload_dates(payload, question, anchor or self.anchor, warnings)
+
         try:
-            intent, params = validate_intent(payload)
+            intent, params = validate_intent(payload, warnings=warnings)
         except ValidationError as exc:
             raise AIParserError(
                 "AI 返回的意图未通过校验：{}".format(exc.message),
                 code=ERROR_INVALID_INTENT,
                 field=exc.field,
             )
-        return {"intent": intent, "params": params, "degraded": False, "error": None}
+        for warning in warnings:
+            # 条件被丢弃属于「部分成功」，必须留痕，不能静默。
+            print("[intent] 警告：{}".format(warning), file=sys.stderr)
+        return {
+            "intent": intent,
+            "params": params,
+            "degraded": False,
+            "warnings": warnings,
+            "error": None,
+        }
 
-    def query(self, question):
+    def query(self, question, anchor=None):
         """给上层用的入口：永不抛异常，失败降级为 ``unknown``。
 
         返回 ``{"intent", "params", "explanation", "chart", "degraded"}``。
         """
-        result = self.parse(question, use_fallback=True)
+        result = self.parse(question, use_fallback=True, anchor=anchor)
         if self.enrich:
             result["chart"] = suggest_chart(result["intent"])
             result["explanation"] = explain(result["intent"], result["params"])
         return result
+
+
+# ---------------------------------------------------------------------------
+# 相对日期解析（把「今天 / 上周一 / 最近七天」变成确定日期）
+# ---------------------------------------------------------------------------
+
+def _resolve_payload_dates(payload, question, anchor, warnings):
+    """把模型返回 JSON 里的时间**原文**换成确定日期。
+
+    先借用 :func:`backend.validate.normalize` 把 payload 拍平（兼容
+    ``{"params": {...}}`` / ``{"entities": {...}}`` 等写法），再交给
+    :func:`backend.time_resolver.resolve` 解析，最后重新拼成
+    ``{"intent": ..., <解析后的参数>}`` 交给白名单校验。
+
+    时间锚点由 Python 提供（模型不知道今天是几号），规则见 backend/time_resolver.py：
+        「今天 / 上周一 / 下周三」以系统当天为基准；
+        「最近七天 / 这几天」以历史数据的最大日期为基准。
+    """
+    try:
+        intent, params = normalize(payload)
+    except ValidationError:
+        # payload 本身不合法（不是对象/缺 intent）：原样返回，让后续校验给出准确报错。
+        return payload
+
+    resolved = resolve_dates(intent, params, anchor, question=question, warnings=warnings)
+    merged = {"intent": intent}
+    merged.update(resolved)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +514,7 @@ def _degraded_result(exc):
     return {
         "intent": FALLBACK_INTENT,
         "params": {},
+        "warnings": [],
         "degraded": True,
         "error": error.to_dict(),
     }
@@ -465,10 +525,67 @@ def _degraded_result(exc):
 # ---------------------------------------------------------------------------
 
 def load_golden_questions(path=None):
-    """读取 ``tests/golden_questions.json``（黄金问题集，只读）。"""
+    """读取 ``tests/golden_questions.json``（黄金问题集，只读）。
+
+    文件结构是 ``{"description": ..., "intents": [...], "questions": [...]}``，
+    这里统一返回 ``questions`` 列表 —— 保持「拿到的就是要遍历的用例」这一直觉。
+    """
     target = path or GOLDEN_PATH
     with open(target, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        return payload.get("questions", [])
+    return payload
+
+
+#: 黄金用例里「待解析的时间原文」字段：会被 time_resolver 消费成具体日期，
+#: 因此不会出现在最终的 params 里，比对时要跳过。
+_RESOLVER_INPUT_FIELDS = ("date_text", "date_range_text")
+
+#: 黄金用例里给测试用的元信息（例如 resolves_to 声明日期该落到哪），不是模型输出。
+_GOLDEN_META_FIELDS = ("resolves_to",)
+
+#: 同一实体的不同表示：黄金用例写 canteen_id，模型更常给 canteen_name。
+#: 两者都能唯一指认食堂，所以任一命中即算通过。
+_SATISFIABLE_BY = {"canteen_id": ("canteen_name",)}
+
+
+def _golden_ok(result, expected):
+    """黄金用例判定：意图一致、未降级，且期望的业务字段都被解析出来。
+
+    只比对 intent 是不够的 —— 人数/设备/日期这些**参数**才是失败高发区
+    （见 Day 08 的字段漂移问题），所以这里逐字段核对期望值。
+
+    两类字段按契约放宽：
+        - ``date_text`` / ``date_range_text`` 是 resolver 的输入，会被消费掉；
+          因此改为断言「已经落成了具体日期字段」，而不是要求键还存在。
+        - ``canteen_id`` 允许用 ``canteen_name`` 等价满足。
+    """
+    if result.get("degraded") or result["intent"] != expected.get("intent"):
+        return False, "intent={}".format(result["intent"])
+    params = result.get("params") or {}
+    warnings = result.get("warnings") or []
+
+    for key, value in expected.items():
+        if key == "intent" or key in _RESOLVER_INPUT_FIELDS or key in _GOLDEN_META_FIELDS:
+            continue
+        if params.get(key) == value:
+            continue
+        if any(params.get(alias) is not None for alias in _SATISFIABLE_BY.get(key, ())):
+            continue
+        if key in params:
+            return False, "{}={!r}（期望 {!r}）".format(key, params.get(key), value)
+        # 字段缺失：如果它其实被解析失败并被记了警告，直接说明原因。
+        for warning in warnings:
+            if key.replace("_text", "") in warning or "无法解析" in warning:
+                return False, "{} 缺失：{}".format(key, warning)
+        return False, "{} 缺失".format(key)
+
+    # 期望了相对日期但一个日期字段都没落出来 —— 说明时间被丢了。
+    if any(key in expected for key in _RESOLVER_INPUT_FIELDS):
+        if not any(name.startswith("date") or name == "target_date" for name in params):
+            return False, "时间表达未落成具体日期"
+    return True, ""
 
 
 def main(argv=None):  # pragma: no cover - 命令行入口
@@ -500,11 +617,15 @@ def main(argv=None):  # pragma: no cover - 命令行入口
             try:
                 result = instance.query(item["question"])
             except Exception as exc:  # 单条失败不影响整轮
-                print("[{}] ERROR {}".format(item["question"], exc))
+                print("[ERROR] {} :: {}".format(item["question"], exc))
                 continue
-            ok = result["intent"] == item["answer"]["intent"] and not result.get("degraded")
+            ok, detail = _golden_ok(result, item["answer"])
             matched += 1 if ok else 0
-            print("[{}] {} -> {}".format("OK " if ok else "DIFF", item["question"], result["intent"]))
+            print(
+                "[{}] {} -> {} {}".format(
+                    "OK  " if ok else "DIFF", item["question"], result["intent"], detail
+                ).rstrip()
+            )
         print("命中 {}/{}".format(matched, len(questions)))
         return 0 if matched == len(questions) else 1
 

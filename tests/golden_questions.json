@@ -1,5 +1,10 @@
 {
   "description": "CampusAI 意图解析黄金问题集：question = 用户原话；answer = 期望的结构化意图。answer 的 JSON 形状与 prompts/intent_parser.md 的输出示例一致，可以直接当作模型返回的 JSON 喂给 backend.validate.validate_intent 做离线校验；带 api 的用例同时用作 mock 模型返回，验证完整调用链。",
+  "answer_field_conventions": {
+    "period_start_period_end": "节次区间统一用 period_start / period_end（与 backend/queries.py、docs/API.md 一致）",
+    "equipment": "设备统一用 has_projector / has_computer（与 classrooms 表列名一致）",
+    "date_text": "相对日期只放原文（如「下周三」），具体日期由 backend/time_resolver.py 解析，因此这类字段是「待解析输入」，不会出现在校验后的 params 里"
+  },
   "intents": [
     "room_search",
     "canteen_analysis",
@@ -12,80 +17,95 @@
   "questions": [
     {
       "id": "room-basic",
+      "category": "找教室",
       "question": "周三下午帮我找一个8个人、有投影的空教室。",
       "answer": {
         "intent": "room_search",
         "weekday": 3,
         "period_start": 5,
-        "end_period": 8,
+        "period_end": 8,
         "capacity": 8,
-        "projector": true
+        "has_projector": true
       }
     },
     {
       "id": "room-computer",
+      "category": "找教室",
       "question": "明天上午三四节想找一间能坐60人、带电脑的机房。",
       "answer": {
         "intent": "room_search",
+        "date_text": "明天",
         "period_start": 3,
-        "end_period": 4,
+        "period_end": 4,
         "capacity": 60,
-        "computer": true,
-        "room_type": "机房"
+        "has_computer": true,
+        "room_type": "机房",
+        "resolves_to": ["date"]
       }
     },
     {
       "id": "room-building",
+      "category": "找教室",
       "question": "周五第1到2节有没有综合楼能坐40人的空教室？",
       "answer": {
         "intent": "room_search",
         "weekday": 5,
         "period_start": 1,
-        "end_period": 2,
+        "period_end": 2,
         "capacity": 40,
         "building": "综合楼"
       }
     },
     {
       "id": "room-english",
+      "category": "找教室",
       "question": "Find me an available classroom on Wednesday with capacity 50 and a projector.",
       "answer": {
         "intent": "room_search",
         "weekday": 3,
         "capacity": 50,
-        "projector": true
+        "has_projector": true
       }
     },
     {
       "id": "canteen-analysis",
+      "category": "食堂问题",
       "question": "上周一食堂中午为什么那么挤？",
       "answer": {
         "intent": "canteen_analysis",
-        "canteen_id": 1,
-        "time_slot": "lunch"
-      }
+        "time_slot": "lunch",
+        "date_text": "上周一",
+        "resolves_to": ["date_from"]
+      },
+      "note": "用户没有指明具体食堂（「食堂」是统称），因此不能假定 canteen_id=1；断言只覆盖时间维度。"
     },
     {
       "id": "canteen-compare",
+      "category": "食堂问题",
       "question": "最近七天各食堂的平均等待时间对比一下。",
       "answer": {
         "intent": "canteen_analysis",
-        "date_from": "2025-09-08",
-        "date_to": "2025-09-14"
-      }
+        "date_range_text": "最近七天",
+        "resolves_to": ["date_from", "date_to"]
+      },
+      "note": "「各食堂对比」跨越全天时段，问题里没有提到餐段，所以不假定 time_slot；具体区间由 time_resolver 以「数据里的最近一天」为右端点解析（用户决策 2）。"
     },
     {
       "id": "canteen-forecast",
+      "category": "食堂问题",
       "question": "预测下周三中午二食堂会有多少人。",
       "answer": {
         "intent": "canteen_forecast",
         "canteen_id": 2,
         "time_slot": "lunch",
-        "horizon_days": 7
-      }
+        "date_text": "下周三",
+        "resolves_to": ["target_date"]
+      },
+      "note": "「下周三」由 Python 解析成 target_date；模型不许自己算日期。"
     },
     {
       "id": "canteen-forecast-date",
+      "category": "食堂问题",
       "question": "预测 2025-09-10 晚餐时段三食堂的排队时间。",
       "answer": {
         "intent": "canteen_forecast",
@@ -95,7 +115,211 @@
       }
     },
     {
+      "id": "relative-today-canteen",
+      "category": "相对日期",
+      "question": "今天中午一食堂人多吗？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "canteen_name": "一食堂",
+        "time_slot": "lunch",
+        "date_text": "今天",
+        "resolves_to": ["date_from"]
+      },
+      "note": "「今天」= 运行脚本的计算机系统当天（用户决策 1）。"
+    },
+    {
+      "id": "relative-last-week-monday",
+      "category": "相对日期",
+      "question": "上周一食堂中午为什么那么挤？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "time_slot": "lunch",
+        "date_text": "上周一",
+        "resolves_to": ["date_from"]
+      }
+    },
+    {
+      "id": "relative-next-wednesday",
+      "category": "相对日期",
+      "question": "预测下周三中午二食堂会有多少人。",
+      "answer": {
+        "intent": "canteen_forecast",
+        "canteen_name": "二食堂",
+        "time_slot": "lunch",
+        "date_text": "下周三",
+        "resolves_to": ["target_date"]
+      }
+    },
+    {
+      "id": "relative-tomorrow-room",
+      "category": "相对日期",
+      "question": "明天上午三四节想找一间能坐60人、带电脑的机房。",
+      "answer": {
+        "intent": "room_search",
+        "date_text": "明天",
+        "period_start": 3,
+        "period_end": 4,
+        "capacity": 60,
+        "has_computer": true,
+        "resolves_to": ["date"]
+      }
+    },
+    {
+      "id": "vague-this-week",
+      "category": "模糊时间",
+      "question": "本周食堂晚餐的排队情况怎么样？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "date_range_text": "本周",
+        "time_slot": "dinner",
+        "resolves_to": ["date_from", "date_to"]
+      }
+    },
+    {
+      "id": "vague-evening",
+      "category": "模糊时间",
+      "question": "傍晚哪个食堂不用排队？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "time_slot": "dinner"
+      },
+      "note": "「傍晚」只能确定到晚餐时段，不猜具体时刻。"
+    },
+    {
+      "id": "vague-few-days",
+      "category": "模糊时间",
+      "question": "这几天二食堂的情况如何？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "date_range_text": "这几天",
+        "canteen_name": "二食堂",
+        "resolves_to": ["date_from", "date_to"]
+      }
+    },
+    {
+      "id": "vague-recent",
+      "category": "模糊时间",
+      "question": "最近食堂人多不多？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "date_range_text": "最近",
+        "resolves_to": ["date_from", "date_to"]
+      },
+      "note": "「最近」= 历史数据里的最近 7 天（用户决策 2）；问题没提餐段，所以不假定 time_slot。"
+    },
+    {
+      "id": "capacity-arabic",
+      "category": "人数表达",
+      "question": "找个能坐30人的空教室。",
+      "answer": {
+        "intent": "room_search",
+        "capacity": 30
+      }
+    },
+    {
+      "id": "capacity-chinese-numeral",
+      "category": "人数表达",
+      "question": "周三下午找个能坐五十人的教室。",
+      "answer": {
+        "intent": "room_search",
+        "weekday": 3,
+        "period_start": 5,
+        "period_end": 8,
+        "capacity": 50
+      }
+    },
+    {
+      "id": "capacity-approximate",
+      "category": "人数表达",
+      "question": "找个大一点的教室，大概四五十人。",
+      "answer": {
+        "intent": "room_search",
+        "capacity": 50
+      },
+      "note": "「四五十人」取上界，保证教室真的坐得下。"
+    },
+    {
+      "id": "capacity-class-size",
+      "category": "人数表达",
+      "question": "我们班有35个人，找个空教室上课。",
+      "answer": {
+        "intent": "room_search",
+        "capacity": 35
+      }
+    },
+    {
+      "id": "device-projector",
+      "category": "设备需求",
+      "question": "要一个有投影仪的教室。",
+      "answer": {
+        "intent": "room_search",
+        "has_projector": true
+      }
+    },
+    {
+      "id": "device-no-projector",
+      "category": "设备需求",
+      "question": "找个没有投影的教室。",
+      "answer": {
+        "intent": "room_search",
+        "has_projector": false
+      }
+    },
+    {
+      "id": "device-computer-room",
+      "category": "设备需求",
+      "question": "我要机房，有电脑的那种。",
+      "answer": {
+        "intent": "room_search",
+        "room_type": "机房",
+        "has_computer": true
+      }
+    },
+    {
+      "id": "device-multiple",
+      "category": "设备需求",
+      "question": "要投影加电脑的空教室。",
+      "answer": {
+        "intent": "room_search",
+        "has_projector": true,
+        "has_computer": true
+      }
+    },
+    {
+      "id": "canteen-crowded",
+      "category": "食堂问题",
+      "question": "二食堂今天怎么这么多人？",
+      "answer": {
+        "intent": "canteen_analysis",
+        "canteen_name": "二食堂",
+        "date_text": "今天",
+        "resolves_to": ["date_from"]
+      }
+    },
+    {
+      "id": "canteen-forecast-guess",
+      "category": "食堂问题",
+      "question": "猜猜明天中午三食堂要等多久。",
+      "answer": {
+        "intent": "canteen_forecast",
+        "canteen_name": "三食堂",
+        "time_slot": "lunch",
+        "date_text": "明天",
+        "resolves_to": ["target_date"]
+      }
+    },
+    {
+      "id": "industry-major-jobs",
+      "category": "产教问题",
+      "question": "软件工程专业能找什么工作？",
+      "answer": {
+        "intent": "industry_skill_match",
+        "major": "软件工程"
+      }
+    },
+    {
       "id": "gap-major",
+      "category": "产教问题",
       "question": "软件工程专业的课程技能和企业岗位需求差在哪里？",
       "answer": {
         "intent": "industry_skill_gap",
@@ -104,6 +328,7 @@
     },
     {
       "id": "gap-ai",
+      "category": "产教问题",
       "question": "计算机科学与技术专业在人工智能行业的岗位技能缺口，只看重要度4以上的。",
       "answer": {
         "intent": "industry_skill_gap",
@@ -114,6 +339,7 @@
     },
     {
       "id": "match-major",
+      "category": "产教问题",
       "question": "数据科学与大数据技术专业对口岗位最需要哪些技能？",
       "answer": {
         "intent": "industry_skill_match",
@@ -122,6 +348,7 @@
     },
     {
       "id": "match-city",
+      "category": "产教问题",
       "question": "深圳的岗位对网络工程专业要求最多的技能是什么？",
       "answer": {
         "intent": "industry_skill_match",
@@ -131,6 +358,7 @@
     },
     {
       "id": "dashboard",
+      "category": "产教问题",
       "question": "看看各行业岗位数量的整体情况。",
       "answer": {
         "intent": "dashboard_query",
@@ -139,17 +367,78 @@
     },
     {
       "id": "unknown-weather",
+      "category": "完全无关",
       "question": "今天天气怎么样？",
       "answer": {
         "intent": "unknown"
-      }
+      },
+      "must_be_unknown": true
     },
     {
       "id": "unknown-open",
+      "category": "完全无关",
       "question": "帮我随便看看。",
       "answer": {
         "intent": "unknown"
-      }
+      },
+      "must_be_unknown": true
+    },
+    {
+      "id": "unknown-stock",
+      "category": "完全无关",
+      "question": "推荐几只股票。",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true,
+      "note": "平台没有任何证券数据；必须返回 unknown，且不允许携带任何业务参数。"
+    },
+    {
+      "id": "unknown-poem",
+      "category": "完全无关",
+      "question": "给我写一首诗。",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true
+    },
+    {
+      "id": "unknown-code",
+      "category": "完全无关",
+      "question": "用Python写个快排。",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true
+    },
+    {
+      "id": "unknown-train-ticket",
+      "category": "完全无关",
+      "question": "帮我订一张去北京的火车票。",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true
+    },
+    {
+      "id": "unknown-menu",
+      "category": "能力边界",
+      "question": "三食堂今天有什么菜？",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true,
+      "note": "在食堂话题内，但平台只有人流/等待时间数据，没有菜单，必须 unknown 而不是硬套 canteen_analysis。"
+    },
+    {
+      "id": "unknown-salary",
+      "category": "能力边界",
+      "question": "人工智能岗位的薪资水平怎么样？",
+      "answer": {
+        "intent": "unknown"
+      },
+      "must_be_unknown": true,
+      "note": "产教话题内，但字段白名单没有薪资维度，必须 unknown。"
     }
   ]
 }
