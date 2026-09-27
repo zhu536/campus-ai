@@ -10,7 +10,7 @@
 
 2\. 第一轮 Prompt
 
-!\[Intent Parser Prompt](images/day8-prompt.png)
+![Intent Parser Prompt](images/day8-prompt.png)
 
 
 
@@ -26,7 +26,7 @@
 
 4\. 执行结果与剩余风险
 
-!\[Intent Parser Execution](images/day8-execution.png)
+![Intent Parser Execution](images/day8-execution.png)
 
 待解决：`prompts/` 目录还未被 Git 追踪，我会立刻执行 `git add` 补上。
 

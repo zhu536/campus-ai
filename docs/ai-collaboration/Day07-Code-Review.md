@@ -14,7 +14,7 @@
 
 审查报告：AI 给出 10 项检查结果，诊断出 pytest 缓存目录权限不足、BOM 字符问题等。
 
-!\[代码审查报告](images/day7-code-review-part1.png)
+![代码审查报告](images/day7-code-review-part1.png)
 
 
 
@@ -24,7 +24,7 @@
 
 AI 反馈：AI 实测确认原有的教室空闲逻辑完全正确，拒绝无意义重构，最终只修改了 4 个文件（+20/-4 行）。
 
-!\[修复结果与测试](images/day7-code-review-part2.png)
+![修复结果与测试](images/day7-code-review-part2.png)
 
 
 
