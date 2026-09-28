@@ -7,8 +7,9 @@
 
 from flask import Blueprint, current_app, jsonify, request
 
-from . import queries
+from . import classroom, queries
 from .db import connection
+from .errors import ValidationError
 from .validators import (
     DIMENSIONS,
     ROOM_TYPES,
@@ -56,6 +57,47 @@ def _classroom_params():
     }
 
 
+def _json_body():
+    """读取 JSON 请求体；没有请求体返回空 dict，类型不对直接 400。"""
+    body = request.get_json(silent=True)
+    if body is None:
+        return {}
+    if not isinstance(body, dict):
+        raise ValidationError('请求体必须是 JSON 对象，例如 {"question": "..."}', field="question")
+    return body
+
+
+def _question_input(body):
+    """取用户问题：POST 用请求体 ``question``，GET 用查询串 ``question``。"""
+    raw = body.get("question", request.args.get("question"))
+    if raw is None:
+        raise ValidationError(
+            "缺少必填参数 question（用户问题，例如「周三下午帮我找一个8人、有投影的空教室」）",
+            field="question",
+        )
+    if not isinstance(raw, str):
+        raise ValidationError("参数 question 必须是字符串，实际为 {!r}".format(raw), field="question")
+    value = raw.strip()
+    if not value:
+        raise ValidationError("参数 question 不能为空", field="question")
+    if len(value) > classroom.MAX_QUESTION_LENGTH:
+        raise ValidationError(
+            "参数 question 最长 {} 个字符，实际 {}".format(
+                classroom.MAX_QUESTION_LENGTH, len(value)
+            ),
+            field="question",
+        )
+    return value
+
+
+def _explain_flag(body):
+    """是否调用 AI 解释结果（默认开启；``explain=0`` 时只用 Python 兜底文案）。"""
+    raw = body.get("explain", request.args.get("explain"))
+    if raw is None:
+        return True
+    return bool(bool_param({"explain": str(raw)}, "explain", default=1))
+
+
 def _gap_params():
     return {
         "major": text_param(request.args, "major", max_length=100),
@@ -73,6 +115,28 @@ def classrooms_available():
     weekday(1-7), period_start(1-12), period_end(1-12), semester, limit(1-100)
     """
     return _ok({"data": _run(queries.list_available_classrooms, _classroom_params())})
+
+
+@api.route("/classrooms/search", methods=["GET", "POST"])
+def classrooms_search():
+    """AI 智能找教室：自然语言问题 → 候选空教室 + AI 解释。
+
+    请求参数（POST JSON 请求体 / GET 查询串）：
+
+    - ``question``（必填）用户问题，例如「周三下午帮我找一个8人、有投影的空教室」
+    - ``explain``（0/1，默认 1）是否调用 AI 解释结果
+
+    链路：Intent Parser（只识别意图+抽参数）→ 参数校验 → classroom 业务函数 →
+    SQLite（queries.list_available_classrooms）→ AI 只解释查询结果。
+    本路由不含 SQL，也不让 AI 接触数据库（详见 backend/classroom.py 的模块说明）。
+    """
+    body = _json_body()
+    data = classroom.search_classrooms(
+        _question_input(body),
+        db_path=current_app.config["DATABASE"],
+        explain=_explain_flag(body),
+    )
+    return _ok({"data": data})
 
 
 @api.get("/canteens/stats")

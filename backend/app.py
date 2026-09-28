@@ -29,10 +29,12 @@ from werkzeug.exceptions import HTTPException
 # 支持 `python backend/app.py` 直接运行（此时包上下文不存在，需要补 sys.path）。
 if __package__ in (None, ""):  # pragma: no cover - 仅影响命令行启动方式
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from backend.classroom import ClassroomSearchError
     from backend.db import default_db_path
     from backend.errors import DatabaseUnavailableError, NotFoundError, ValidationError
     from backend.routes import api
 else:
+    from .classroom import ClassroomSearchError
     from .db import default_db_path
     from .errors import DatabaseUnavailableError, NotFoundError, ValidationError
     from .routes import api
@@ -70,6 +72,11 @@ def _register_error_handlers(app):
     @app.errorhandler(NotFoundError)
     def handle_not_found(exc):
         return _error_response(404, exc.to_dict()["code"], exc.message, _extra(exc))
+
+    @app.errorhandler(ClassroomSearchError)
+    def handle_classroom_search_error(exc):
+        """找教室链路失败：AI 不可用 503 / 意图不是找教室 400（见 backend/classroom.py）。"""
+        return _error_response(exc.status_code, exc.code, exc.message, _extra(exc))
 
     @app.errorhandler(DatabaseUnavailableError)
     def handle_database_unavailable(exc):

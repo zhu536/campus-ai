@@ -2,7 +2,9 @@
 
 - 代码位置：`backend/`（分层见下）
 - 数据库：`data/campus.db`（由 `python scripts/import_data.py` 生成，**只读查询**）
-- 本阶段**不接 AI**：所有接口都是确定性的 SQL 查询 + Python 计算，没有 LLM 参与
+- 确定性接口（食堂 / 产教 / 教室列表）不接 AI：SQL 查询 + Python 计算，没有 LLM 参与
+- `GET/POST /api/classrooms/search` 是唯一接入 AI 的接口：AI 只负责**识别意图**与**解释结果**，
+  参数校验、数据查询、计算全部由 Python + SQLite 完成（AI 不碰数据库，也不生成 SQL）
 - 所有响应都是 JSON，统一外壳：
 
 ```json
@@ -28,9 +30,13 @@ set FLASK_APP=backend.app && python -m flask run
 | `backend/app.py` | 应用工厂 + 统一 JSON 错误处理 |
 | `backend/routes.py` | 路由：解析参数 → 调用业务函数 → 返回 JSON（无 SQL） |
 | `backend/queries.py` | 业务查询与计算（不 import flask，可被脚本直接调用） |
+| `backend/classroom.py` | AI 智能找教室的编排：解析 → 校验 → 查询 → 解释（不写 SQL） |
+| `backend/ai_parser.py` | 意图解析器（自然语言 → Intent JSON，不查数据） |
 | `backend/validators.py` | 参数校验（字符串 → 安全值，非法即 400） |
 | `backend/db.py` | 连接管理与参数化查询工具 |
 | `backend/errors.py` | `ValidationError(400)` / `NotFoundError(404)` / `DatabaseUnavailableError(503)` |
+
+正式 Prompt 放在 `prompts/`：`intent_parser.md`（意图解析）、`insight_generator.md`（结果解释）。
 
 ## 通用约定
 
@@ -75,6 +81,70 @@ set FLASK_APP=backend.app && python -m flask run
 排序：先「刚好够用」（`capacity - 需求` 最小），再容量、楼层升序。`limit` 只截断 `rooms`，`total` 始终是完整命中数。
 
 错误：`400`（weekday/period/capacity/limit/room_type 非法）、`404`（semester 不存在，附 `available` 学期清单）。
+
+## 1.1 GET/POST /api/classrooms/search（AI 智能找教室）
+
+用一句自然语言找空教室：`周三下午帮我找一个8人、有投影的空教室。`
+
+完整链路：
+
+```
+question
+  → Intent Parser（prompts/intent_parser.md，只识别意图 + 抽参数）
+  → 参数校验（validate.py 白名单 + classroom.validate_room_params，非法即 400）
+  → classroom service（backend/classroom.py）
+  → SQLite（queries.list_available_classrooms）
+  → 候选教室（Python 排序 + 空结果放宽建议）
+  → AI 解释结果（prompts/insight_generator.md，只能看到查询结果）
+```
+
+| 参数 | 位置 | 类型 | 默认 | 说明 |
+|---|---|---|---|---|
+| `question` | POST JSON 请求体 / GET 查询串 | text ≤ 200 | **必填** | 用户自然语言问题 |
+| `explain` | 同上 | 0/1 | 1 | 是否调用 AI 解释结果（0 = 只用 Python 兜底文案，离线可用） |
+
+响应要点：
+
+```json
+{
+  "data": {
+    "question": "周三下午帮我找一个8人、有投影的空教室。",
+    "intent": "room_search",
+    "params": { "capacity": 8, "has_projector": true, "weekday": 3, "period_start": 5, "period_end": 8 },
+    "query": { "semester": "2025-2026-1", "weekday": 3, "period_start": 5, "period_end": 8,
+               "capacity": 8, "has_projector": true, "status": "available", "limit": 10 },
+    "total": 14,
+    "summary": { "candidate_count": 31, "occupied_count": 17, "available_count": 14, "capacity_window": 50 },
+    "rooms": [ { "room_id": 24, "room_name": "B103", "building": "第二教学楼", "floor": 1,
+                 "capacity": 45, "has_projector": true, "has_computer": false,
+                 "room_type": "普通", "status": "available" } ],
+    "hint": [],
+    "notes": ["共 14 间符合条件，受 limit=10 限制这里只返回前 10 间。"],
+    "explanation": {
+      "text": "按 至少 8 人、需要投影、周三、第 5-8 节 查询，找到 14 间空教室。\n• …",
+      "summary": "…", "highlights": ["…"], "suggestions": ["…"],
+      "source": "ai", "error": null
+    }
+  }
+}
+```
+
+- `params` 是**校验后**的意图参数（白名单外的字段会被丢弃并在 `notes` 里留痕，因此 AI 无法指定 `room_id`）。
+- `query` / `total` / `summary` / `rooms` 原样来自 `backend/queries.py`，即来自 SQLite。
+- `explanation.source`：`ai` = 模型解释；`local` = AI 不可用或返回不合法时的 Python 兜底文案，
+  此时 `explanation.error` 里带错误码（`missing_config` / `network_error` / `invalid_json` / `unsafe_explanation`）。
+- `hint`：**查询为空时**由 Python 再查一次 SQLite 得出的放宽建议，例如
+  「不限制人数时，同一时段有 14 间空教室，但可能坐不下 1000 人。」；AI 不会独自编造建议。
+- `notes`：解析层的丢弃提示、`limit` 截断说明、查询层的已知语义缺口（如 `has_projector=false` 不生效）。
+
+错误：
+
+- `400 unsupported_intent`：识别到的意图不是 `room_search`（例如食堂问题），附 `field=intent`
+- `400 invalid_parameter`：`question` 非法 / 意图参数没通过校验（附 `field`）
+- `503 ai_unavailable`：意图解析不可用（缺 `AI_API_KEY` 或网络失败），消息里带原因
+
+> 设计约束：AI 不能访问数据库、不能生成 SQL、不能选教室；SQLite 只保存事实数据；
+> 教室是否空闲由 Python 在查询时实时计算（见 `backend/classroom.py` 的模块说明）。
 
 ## 2. GET /api/canteens/stats
 
@@ -181,6 +251,7 @@ set FLASK_APP=backend.app && python -m flask run
 
 ```bash
 pytest tests -q          # tests/test_api.py 覆盖四个接口 + 业务层 + 参数化查询 + 错误码
+                         # tests/test_classroom.py 覆盖 AI 找教室链路（离线，不联网）
 ```
 
 测试会把 `data/campus.db` 复制到临时目录后只读使用，不会修改仓库里的数据库，也不会触碰 `frontend/`。
