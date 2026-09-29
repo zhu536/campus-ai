@@ -7,7 +7,7 @@
 
 from flask import Blueprint, current_app, jsonify, request
 
-from . import classroom, queries
+from . import classroom, forecast, queries
 from .db import connection
 from .errors import ValidationError
 from .validators import (
@@ -16,7 +16,9 @@ from .validators import (
     TIME_SLOTS,
     bool_param,
     choice_param,
+    date_param,
     date_range,
+    float_param,
     int_param,
     period_range,
     text_param,
@@ -107,6 +109,43 @@ def _gap_params():
     }
 
 
+def _forecast_params():
+    """食堂趋势 / 高峰 / 预测的查询参数（字段与 backend/forecast 的校验层一一对应）。"""
+    date_from, date_to = date_range(request.args, "date_from", "date_to")
+    return {
+        "canteen_id": int_param(request.args, "canteen_id", minimum=1),
+        "date_from": date_from,
+        "date_to": date_to,
+        "time_slot": choice_param(request.args, "time_slot", TIME_SLOTS),
+        "target_date": date_param(request.args, "target_date"),
+        "horizon_days": int_param(
+            request.args,
+            "horizon_days",
+            default=forecast.DEFAULT_HORIZON_DAYS,
+            minimum=1,
+            maximum=forecast.MAX_HORIZON_DAYS,
+        ),
+        "peak_ratio": float_param(
+            request.args,
+            "peak_ratio",
+            default=forecast.PEAK_RATIO,
+            minimum=forecast.MIN_PEAK_RATIO,
+            maximum=forecast.MAX_PEAK_RATIO,
+        ),
+    }
+
+
+def _canteen_section(section):
+    """跑一张食堂报表：Python 统计/预测 → 连接关闭 → AI 只解释结果（见 backend/forecast.py）。"""
+    data = forecast.analyze_canteen(
+        _forecast_params(),
+        db_path=current_app.config["DATABASE"],
+        explain=_explain_flag({}),
+        sections=(section,),
+    )
+    return _ok({"data": data})
+
+
 @api.get("/classrooms/available")
 def classrooms_available():
     """找空闲教室。
@@ -160,6 +199,39 @@ def canteens_stats():
         ),
     }
     return _ok({"data": _run(queries.canteen_stats, params)})
+
+
+@api.get("/canteens/trend")
+def canteens_trend():
+    """历史就餐趋势（按天 / 按星期几）。
+
+    查询参数：date_from, date_to (YYYY-MM-DD), canteen_id, time_slot, explain(0/1)
+
+    统计与趋势判定全部在 Python（见 backend/forecast.py），AI 只解释已算好的结果。
+    """
+    return _canteen_section("trend")
+
+
+@api.get("/canteens/peak")
+def canteens_peak():
+    """高峰时间段：逐小时人流、峰值小时、高峰区间与早/午/晚餐对比。
+
+    查询参数：date_from, date_to (YYYY-MM-DD), canteen_id, time_slot,
+    peak_ratio(0.1-1.0，默认 0.8), explain(0/1)
+    """
+    return _canteen_section("peak")
+
+
+@api.get("/canteens/forecast")
+def canteens_forecast():
+    """未来午餐人流预测，方法固定为「历史同期平均值 + 星期修正 + 时间段修正」。
+
+    查询参数：date_from, date_to (YYYY-MM-DD), canteen_id, time_slot(默认午餐),
+    target_date (YYYY-MM-DD), horizon_days(1-30，默认 3), explain(0/1)
+
+    预测由 Python 用均值与加减法完成（不训练任何模型），AI 只解释结果。
+    """
+    return _canteen_section("forecast")
 
 
 @api.get("/industry/skills")

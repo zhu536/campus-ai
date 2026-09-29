@@ -2,9 +2,10 @@
 
 - 代码位置：`backend/`（分层见下）
 - 数据库：`data/campus.db`（由 `python scripts/import_data.py` 生成，**只读查询**）
-- 确定性接口（食堂 / 产教 / 教室列表）不接 AI：SQL 查询 + Python 计算，没有 LLM 参与
-- `GET/POST /api/classrooms/search` 是唯一接入 AI 的接口：AI 只负责**识别意图**与**解释结果**，
-  参数校验、数据查询、计算全部由 Python + SQLite 完成（AI 不碰数据库，也不生成 SQL）
+- 确定性接口（食堂汇总 / 产教 / 教室列表）不接 AI：SQL 查询 + Python 计算，没有 LLM 参与
+- `GET/POST /api/classrooms/search`、`GET /api/canteens/trend|peak|forecast` 是接入 AI 的接口：
+  AI 只负责**识别意图**与**解释结果**，参数校验、数据查询、统计与预测全部由 Python + SQLite 完成
+  （AI 不碰数据库，也不生成 SQL，更不替 Python 算数）
 - 所有响应都是 JSON，统一外壳：
 
 ```json
@@ -31,12 +32,14 @@ set FLASK_APP=backend.app && python -m flask run
 | `backend/routes.py` | 路由：解析参数 → 调用业务函数 → 返回 JSON（无 SQL） |
 | `backend/queries.py` | 业务查询与计算（不 import flask，可被脚本直接调用） |
 | `backend/classroom.py` | AI 智能找教室的编排：解析 → 校验 → 查询 → 解释（不写 SQL） |
+| `backend/forecast.py` | 食堂分析：趋势 / 高峰 / 午餐预测的统计与预测 + 结果解释（不写 SQL） |
 | `backend/ai_parser.py` | 意图解析器（自然语言 → Intent JSON，不查数据） |
 | `backend/validators.py` | 参数校验（字符串 → 安全值，非法即 400） |
 | `backend/db.py` | 连接管理与参数化查询工具 |
 | `backend/errors.py` | `ValidationError(400)` / `NotFoundError(404)` / `DatabaseUnavailableError(503)` |
 
-正式 Prompt 放在 `prompts/`：`intent_parser.md`（意图解析）、`insight_generator.md`（结果解释）。
+正式 Prompt 放在 `prompts/`：`intent_parser.md`（意图解析）、`insight_generator.md`（教室结果解释）、
+`canteen_insight_generator.md`（食堂结果解释）。
 
 ## 通用约定
 
@@ -181,6 +184,140 @@ question
 
 错误：`400`（日期格式/区间颠倒、`canteen_id`、`time_slot`、`top_slots` 非法）。
 
+## 2.1 GET /api/canteens/trend
+
+历史就餐趋势：按天汇总人流，并给出前后半段对比的趋势方向。**统计全部在 Python**（`backend/forecast.py`）。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `date_from` / `date_to` | `YYYY-MM-DD` | - | 日期区间（闭区间） |
+| `canteen_id` | int ≥ 1 | - | 指定食堂；不传表示全校合计 |
+| `time_slot` | breakfast/lunch/dinner/other | - | 指定时段；不传表示全部时段 |
+| `explain` | 0/1 | 1 | 是否调用 AI 解释结果（`0` 只用 Python 兜底文案） |
+
+口径：先把「同一日期 + 同一小时」的多食堂记录合计成一个**客流单元**，再对单元做统计，
+因此不指定食堂时 `people_total` 是全校合计、`avg_people` 是每小时的校园平均客流。
+
+```json
+{
+  "data": {
+    "params": { "canteen_id": 1, "time_slot": "lunch", "date_from": null, "date_to": null,
+                "target_date": null, "horizon_days": 3, "peak_ratio": 0.8 },
+    "query": { "canteen_id": 1, "date_from": null, "date_to": null, "time_slot": null },
+    "summary": { "days": 75, "records": 225, "canteens": 1, "people_total": 131378,
+                 "avg_people_per_day": 1751.71, "avg_people_per_hour": 583.9,
+                 "date_start": "2025-09-01", "date_end": "2025-11-14",
+                 "busiest_date": { "date": "2025-09-05", "weekday_name": "周五", "people_total": 2034 },
+                 "quietest_date": { "date": "2025-10-04", "weekday_name": "周六", "people_total": 910 } },
+    "trend": { "direction": "up", "first_half_avg": 1668.35, "second_half_avg": 1832.87,
+               "change_rate": 0.0986, "compared_days": 75, "flat_tolerance": 0.05 },
+    "series": [ { "date": "2025-09-01", "weekday": 1, "weekday_name": "周一", "records": 3,
+                  "hours": 3, "people_total": 1706, "avg_people_per_hour": 568.67,
+                  "avg_wait_minutes": 7.33 } ],
+    "weekday_profile": [ { "weekday": 1, "weekday_name": "周一", "days": 11, "samples": 33,
+                           "people_total": 19468, "avg_people": 589.94 } ],
+    "notes": [ "本次只看「午餐」时段。" ],
+    "explanation": { "text": "…", "summary": "…", "highlights": ["…"], "suggestions": ["…"],
+                     "source": "ai", "error": null }
+  }
+}
+```
+
+`trend.direction`：`up` / `down` / `flat`（前后半段日均人流变化率在 ±`flat_tolerance` 内即为 `flat`）。
+
+## 2.2 GET /api/canteens/peak
+
+高峰时间段：逐小时人流与等待时间、峰值小时、**高峰区间**，以及早/午/晚餐对比。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `date_from` / `date_to` | `YYYY-MM-DD` | - | 日期区间 |
+| `canteen_id` | int ≥ 1 | - | 指定食堂 |
+| `time_slot` | breakfast/lunch/dinner/other | - | 指定时段 |
+| `peak_ratio` | 0.1..1.0 | 0.8 | 高峰边界：人流 ≥ 峰值 × 该比例算高峰 |
+| `explain` | 0/1 | 1 | 是否调用 AI 解释结果 |
+
+高峰区间算法（纯比较，不做回归）：从峰值小时向两侧扩张，只吸收**逐个小时相邻**且
+`avg_people >= 峰值 × peak_ratio` 的小时。`label` 里的右端点已 +1 小时，例如 `"11:00-13:00"`
+表示 11 点与 12 点这两个小时。
+
+```json
+{
+  "data": {
+    "peak_ratio": 0.8,
+    "summary": { "records": 225, "people_total": 131379, "peak_hour": 12,
+                 "peak_avg_people": 702.35, "peak_window": "11:00-13:00",
+                 "peak_slot": "lunch", "peak_slot_name": "午餐" },
+    "window": { "start_hour": 11, "end_hour": 12, "hours": [11, 12], "label": "11:00-13:00",
+                "avg_people": 644.92, "peak_hour": 12, "peak_avg_people": 702.35,
+                "threshold_ratio": 0.8, "threshold_people": 561.88 },
+    "hours": [ { "hour": 12, "days": 75, "samples": 75, "people_total": 52676,
+                 "avg_people": 702.35, "share": 0.4009, "avg_wait_minutes": 10.34,
+                 "is_peak": true, "in_window": true } ],
+    "ranked_hours": [ { "hour": 12, "avg_people": 702.35 } ],
+    "slots": [ { "time_slot": "lunch", "slot_name": "午餐", "days": 75, "samples": 75,
+                 "people_total": 131378, "avg_people_per_day": 1751.71, "share": 1.0,
+                 "avg_wait_minutes": 7.83, "is_peak": true } ],
+    "explanation": { "source": "ai", "error": null, "…": "…" }
+  }
+}
+```
+
+- `hours[].avg_people` 是**每小时**的平均客流；`slots[].avg_people_per_day` 是**每天**该时段
+  的合计平均（时段是一天里的一个区间，两者口径不同，故意用不同字段名）。
+
+## 2.3 GET /api/canteens/forecast
+
+未来午餐人流预测。预测方法**只有一种**，保持简单：
+
+```
+预测值 = 历史同期平均值 + 星期修正 + 时间段修正
+B       = 训练窗口内「同一日期 + 同一小时」客流的算术平均
+ΔW(w)   = 星期 w 的历史平均 − B
+ΔH(h)   = h 点的历史平均 − B
+预测(t,h) = max(0, B + ΔW(weekday(t)) + ΔH(h))
+```
+
+不训练任何模型、不引入机器学习库（无神经网络 / XGBoost / Transformer），只有均值与加减法。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `date_from` / `date_to` | `YYYY-MM-DD` | - | 训练窗口 |
+| `canteen_id` | int ≥ 1 | - | 指定食堂 |
+| `time_slot` | breakfast/lunch/dinner/other | lunch | 训练与预测的时段 |
+| `target_date` | `YYYY-MM-DD` | 历史最后一天之后 | 预测起始日 |
+| `horizon_days` | 1..30 | 3 | 预测几天 |
+| `explain` | 0/1 | 1 | 是否调用 AI 解释结果 |
+
+```json
+{
+  "data": {
+    "method": "历史同期平均值 + 星期修正 + 时间段修正",
+    "training": { "time_slot": "lunch", "records": 225, "days": 75, "cells": 225,
+                  "date_start": "2025-09-01", "date_end": "2025-11-14",
+                  "base_avg_people": 583.9022, "hours": [11, 12, 13],
+                  "by_weekday": [ { "weekday": 1, "weekday_name": "周一", "days": 11, "samples": 33,
+                                    "avg_people": 589.9394, "adjustment": 6.0372 } ],
+                  "by_hour": [ { "hour": 12, "samples": 75, "avg_people": 702.3467,
+                                 "adjustment": 118.4444 } ] },
+    "predictions": [ { "date": "2025-11-15", "weekday": 6, "weekday_name": "周六",
+                       "predicted_people_total": 1663,
+                       "hours": [ { "hour": 12, "base": 583.9022, "weekday_adjustment": -29.5022,
+                                    "hour_adjustment": 118.4444, "predicted_people": 673 } ] } ],
+    "notes": [],
+    "explanation": { "source": "ai", "error": null, "…": "…" }
+  }
+}
+```
+
+- 每个小时的 `base` / `weekday_adjustment` / `hour_adjustment` 都返回，可原地复算，没有黑箱。
+- `predicted_people_total` = 各小时 `predicted_people`（`floor(x+0.5)` 取整）之和。
+- 该时段没有历史记录时返回 `predictions: []` + `notes` 说明，而不是硬凑数字。
+- 说明：`/api/canteens/stats` 的 `avg_people` 是「每条记录」平均，本节口径是「客流单元」，
+  两者在指定单个食堂时数值相同；不指定食堂时本节是全校合计。
+
+错误：`400`（日期/时段/`horizon_days`/`peak_ratio` 非法）、`404`（`canteen_id` 不存在，附 `available` 食堂名）。
+
 ## 3. GET /api/industry/skills
 
 企业技能需求统计，可按行业 / 城市 / 专业 / 公司任选分组维度。
@@ -252,6 +389,8 @@ question
 ```bash
 pytest tests -q          # tests/test_api.py 覆盖四个接口 + 业务层 + 参数化查询 + 错误码
                          # tests/test_classroom.py 覆盖 AI 找教室链路（离线，不联网）
+                         # tests/test_forecast.py 覆盖食堂趋势 / 高峰 / 预测与 AI 解释边界（离线，不联网）
 ```
 
 测试会把 `data/campus.db` 复制到临时目录后只读使用，不会修改仓库里的数据库，也不会触碰 `frontend/`。
+`tests/test_forecast.py` 另建一个**值完全可控的合成库**，用来对预测公式做精确断言。

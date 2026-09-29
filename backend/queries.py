@@ -7,6 +7,9 @@
     industry_skills             GET /api/industry/skills
     industry_skill_gap          GET /api/industry/gap
 
+另外提供一个「数据底座」函数（不是接口，供 backend/forecast.py 做统计与预测）：
+    canteen_meal_grid           食堂人流「日期 × 小时」明细
+
 约定：
     1. 每个函数签名是 ``(conn, params: dict) -> dict``，``params`` 是**已经校验过**的值，
        返回值直接就是 JSON 可序列化的 dict（数字都是 int/float，不含 sqlite3.Row）。
@@ -337,6 +340,103 @@ def canteen_stats(conn, params):
             "date_end": summary_row["date_end"],
         },
         "canteens": items,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2b. 食堂趋势 / 高峰 / 预测的数据底座（供 backend/forecast.py 使用）
+# ---------------------------------------------------------------------------
+
+def canteen_meal_grid(conn, params):
+    """取食堂人流「日期 × 小时」明细网格，供 ``backend/forecast.py`` 做统计与预测。
+
+    与 :func:`canteen_stats` 的分工：
+
+        - ``canteen_stats`` 给**人看的报表**：SQL 聚合好的人流/等待/拥挤度/高峰。
+        - ``canteen_meal_grid`` 给**算法用的底座**：只按条件筛选并回填容量，
+          均值、修正系数、高峰判定、预测全部在 Python 算
+          （AGENTS.md AI Rules：数据统计与预测归 Python，SQLite 只提供事实）。
+
+    为什么不做 GROUP BY：``meal_records`` 上有
+    ``UNIQUE(canteen_id, record_date, record_hour)``，同一食堂同一天同一小时只有
+    一条记录，聚合只会得到同样的行。把粒度留在「日期 × 小时」上，同一份网格就能
+    同时服务趋势、高峰、预测三张报表 —— 只读一次库，三个口径天然一致。
+
+    ``time_slot`` 也照常在这里生效（调用方 ``forecast`` 故意不传，改在 Python 侧
+    按报表需要过滤，这样一次读取能同时支撑「全部时段」的趋势/高峰与「午餐」的预测）。
+
+    容量优先取 ``meal_records.capacity`` 快照，缺失时回退 ``canteens.capacity``
+    （``COALESCE``，与 :func:`canteen_stats` 同一口径）。
+    """
+    canteen_id = params.get("canteen_id")
+    date_from = params.get("date_from")
+    date_to = params.get("date_to")
+    time_slot = params.get("time_slot")
+
+    # 食堂编号先做存在性校验，避免「写错编号 → 空结果」被误读成「这段时间没人吃饭」。
+    if canteen_id is not None and canteen_id not in set(
+        _distinct_values(conn, "canteen_id", "canteens")
+    ):
+        raise NotFoundError(
+            "食堂 {} 不存在".format(canteen_id),
+            field="canteen_id",
+            available=_distinct_values(conn, "canteen_name", "canteens"),
+        )
+
+    where = (
+        WhereBuilder()
+        .add("m.canteen_id", "=", canteen_id)
+        .add("m.record_date", ">=", date_from)
+        .add("m.record_date", "<=", date_to)
+        .add("m.time_slot", "=", time_slot)
+    )
+    rows = query_all(
+        conn,
+        "SELECT m.canteen_id, c.canteen_name, m.record_date, m.record_hour, m.time_slot,"
+        " m.people_count, m.wait_minutes, COALESCE(m.capacity, c.capacity) AS capacity"
+        " FROM meal_records AS m JOIN canteens AS c ON c.canteen_id = m.canteen_id"
+        + where.sql()
+        + " ORDER BY m.record_date ASC, m.record_hour ASC, m.canteen_id ASC",
+        where.params,
+    )
+
+    records = [
+        {
+            "canteen_id": row["canteen_id"],
+            "canteen_name": row["canteen_name"],
+            "record_date": row["record_date"],
+            "record_hour": row["record_hour"],
+            "time_slot": row["time_slot"],
+            "people_count": row["people_count"],
+            "wait_minutes": _round(row["wait_minutes"]),
+            "capacity": row["capacity"],
+        }
+        for row in rows
+    ]
+
+    seen = {}
+    for record in records:
+        seen.setdefault(record["canteen_id"], record["canteen_name"])
+
+    return {
+        "query": {
+            "canteen_id": canteen_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "time_slot": time_slot,
+        },
+        "total": len(records),
+        "summary": {
+            "records": len(records),
+            "canteens": len(seen),
+            "date_start": min((item["record_date"] for item in records), default=None),
+            "date_end": max((item["record_date"] for item in records), default=None),
+            "people_total": sum(item["people_count"] for item in records),
+        },
+        "canteens": [
+            {"canteen_id": key, "canteen_name": seen[key]} for key in sorted(seen)
+        ],
+        "records": records,
     }
 
 
