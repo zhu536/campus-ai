@@ -718,3 +718,134 @@ def industry_skill_gap(conn, params):
         "missing_skills": missing_skills[:top],
         "required_missing_skills": required_missing[:top],
     }
+
+
+# ---------------------------------------------------------------------------
+# 4b. 产教融合技能分析的「事实底座」（供 backend/industry.py 使用）
+# ---------------------------------------------------------------------------
+
+def industry_skill_grid(conn, params):
+    """取「岗位技能需求 + 专业课程技能覆盖」的明细网格，供 ``backend/industry.py`` 做匹配。
+
+    与 :func:`industry_skill_gap` 的分工（同一份数据，两种用途）：
+
+        - ``industry_skill_gap`` 给**人看的报表**：SQL 聚合好的覆盖数与缺口清单。
+        - ``industry_skill_grid`` 给**匹配算法用的底座**：只按条件筛选并回填技能名，
+          两个技能集合的交集/差集、覆盖率、重要度分级**全部在 Python 算**
+          （AGENTS.md AI Rules：数据计算归 Python，SQLite 只提供事实）。
+
+    因此本函数刻意不做任何「覆盖率 / 交集 / 缺口」计算，也不写库、不接 AI；
+    它返回的是「某专业的对口岗位各要求哪些技能」与「某专业的课程覆盖了哪些技能」
+    两份明细，粒度足够让 Python 侧按岗位、按技能任意重组。
+
+    返回：
+        query         本次筛选条件
+        summary       岗位数 / 岗位技能条数 / 课程数 / 课程技能条数 / 行业数
+        jobs[]        对口岗位，每个岗位带自己的 ``skills[]``（importance / is_required）
+        course_skills[] 该专业课程覆盖的技能明细（course + skill + level）
+
+    ``major`` 不存在（或没有开课记录）时抛 :class:`~backend.errors.NotFoundError`，
+    避免「写错专业名 → 空结果」被误读成「没有缺口」。
+    """
+    major = params.get("major")
+    industry = params.get("industry")
+
+    if not major:
+        raise ValidationError("缺少必填参数 major", field="major")
+    available = _distinct_values(conn, "department", "courses")
+    if major not in available:
+        raise NotFoundError(
+            "专业 {} 不存在（或没有开课记录）".format(major),
+            field="major",
+            available=available,
+        )
+
+    # 岗位筛选条件（列名是代码常量，值全部走 ? 绑定）。
+    job_where = WhereBuilder().add("j.major", "=", major).add("j.industry", "=", industry)
+
+    job_rows = query_all(
+        conn,
+        "SELECT j.job_id, j.job_title, j.company, j.industry, j.city, j.major"
+        " FROM jobs AS j"
+        + job_where.sql()
+        + " ORDER BY j.job_id ASC",
+        job_where.params,
+    )
+
+    jobs = {}
+    for row in job_rows:
+        jobs[row["job_id"]] = {
+            "job_id": row["job_id"],
+            "job_title": row["job_title"],
+            "company": row["company"],
+            "industry": row["industry"],
+            "city": row["city"],
+            "major": row["major"],
+            "skills": [],
+        }
+
+    skill_rows = query_all(
+        conn,
+        "SELECT js.job_id, s.skill_id, s.skill_name, s.skill_category,"
+        " js.importance, js.is_required"
+        " FROM jobs AS j"
+        " JOIN job_skills AS js ON js.job_id = j.job_id"
+        " JOIN skills AS s ON s.skill_id = js.skill_id"
+        + job_where.sql()
+        + " ORDER BY js.job_id ASC, js.importance DESC, s.skill_name ASC",
+        job_where.params,
+    )
+    for row in skill_rows:
+        job = jobs.get(row["job_id"])
+        if job is None:  # 防御性分支：JOIN 已保证岗位存在，正常不会命中
+            continue
+        job["skills"].append(
+            {
+                "skill_id": row["skill_id"],
+                "skill_name": row["skill_name"],
+                "skill_category": row["skill_category"],
+                "importance": row["importance"],
+                # SQLite 里是 0/1，转成 bool 交给 Python 匹配层，避免下游再判一次。
+                "is_required": bool(row["is_required"]),
+            }
+        )
+
+    # 专业课程覆盖的技能：只按 c.department 筛选，不聚合（聚合由 Python 做）。
+    course_rows = query_all(
+        conn,
+        "SELECT c.course_id, c.course_name, s.skill_id, s.skill_name,"
+        " s.skill_category, cs.level"
+        " FROM courses AS c"
+        " JOIN course_skills AS cs ON cs.course_id = c.course_id"
+        " JOIN skills AS s ON s.skill_id = cs.skill_id"
+        " WHERE c.department = ?"
+        " ORDER BY c.course_id ASC, s.skill_name ASC",
+        (major,),
+    )
+    course_skills = [
+        {
+            "course_id": row["course_id"],
+            "course_name": row["course_name"],
+            "skill_id": row["skill_id"],
+            "skill_name": row["skill_name"],
+            "skill_category": row["skill_category"],
+            "level": row["level"],
+        }
+        for row in course_rows
+    ]
+
+    return {
+        "query": {"major": major, "industry": industry},
+        "summary": {
+            "major": major,
+            "jobs": len(jobs),
+            "job_skills": len(skill_rows),
+            "courses": len({row["course_id"] for row in course_rows}),
+            "course_skills": len(course_skills),
+            "industries": len(
+                {job["industry"] for job in jobs.values() if job["industry"]}
+            ),
+        },
+        "jobs": [jobs[key] for key in sorted(jobs)],
+        "course_skills": course_skills,
+    }

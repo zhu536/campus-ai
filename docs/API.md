@@ -384,13 +384,94 @@ B       = 训练窗口内「同一日期 + 同一小时」客流的算术平均
 错误：`400`（缺 `major`、`min_importance`/`top` 越界）、`404`（专业不存在，附 `available` 专业清单）。
 返回的 `covered_skills` / `missing_skills` 受 `top` 截断，但 `summary` 里的计数始终是全量。
 
+## 5. GET /api/industry/match
+
+产教融合技能分析：**企业岗位技能需求 ↔ 专业课程技能覆盖**，由 `backend/industry.py` 实现。
+
+与 `/api/industry/gap` 的区别：本接口走完整链路 —— SQLite 只取事实 → **Python 完成全部匹配与
+覆盖率计算**（`match_job_to_major` / `calculate_skill_gap`）→ 连接关闭 → AI 只解释已经算好的
+结果。AI **不算覆盖率、不修改计算结果**（解释写在 `explanation` 里，解释前后比对结果指纹）。
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `major` | text | **必填** | 专业名，对应 `courses.department` / `jobs.major` |
+| `industry` | text | - | 只统计该行业的对口岗位 |
+| `min_importance` | 1..5 | 1 | 只看重要度 ≥ 该值的技能（技能级门槛） |
+| `top` | 1..100 | 20 | 三张技能清单各返回多少条 |
+| `question` | text(≤200) | - | 用户原始问题，只用于让 AI 结合原问题解释 |
+| `explain` | 0/1 | 1 | `0` 时跳过 AI，直接用 Python 兜底文案 |
+
+五个输出（任务口径）：
+
+1. **技能需求** `skill_demands[]`：岗位要求的技能全集，每条含 `importance`、`importance_level`、
+   `job_count`、`required_job_count`、`is_required`、`covered`、`course_level`
+2. **已覆盖技能** `covered_skills[]` = 技能需求 ∩ 课程技能
+3. **缺失技能** `missing_skills[]` = 技能需求 − 课程技能（另有 `required_missing_skills[]`）
+4. **技能覆盖率** `coverage_rate` = 覆盖数 / 技能需求数；`summary.weighted_coverage_rate`
+   按重要度加权；`summary.course_covered_ratio` 是反向指标（课程技能里被岗位要求的比例）
+5. **技能重要程度** `importance`：`scale`/`max`/`avg`/`level`（核心/重要/较高/一般/次要）
+   与逐档 `distribution[]`；每个技能上还有 `importance_level`
+
+```json
+{
+  "data": {
+    "major": "软件工程",
+    "scope": "专业「软件工程」，17 个对口岗位、13 门课程、37 项课程技能",
+    "summary": { "job_count": 17, "matched_job_count": 17, "course_count": 13,
+                 "course_skill_count": 12, "required_skill_count": 17,
+                 "covered_skill_count": 10, "missing_skill_count": 7,
+                 "required_missing_count": 7, "coverage_rate": 0.5882,
+                 "weighted_coverage_rate": 0.6081, "course_covered_ratio": 0.871,
+                 "returned_skill_count": 17, "truncated": false },
+    "coverage_rate": 0.5882,
+    "importance": { "scale": "1-5", "max": 5, "avg": 4.35, "level": "重要",
+                    "core_skill_count": 10,
+                    "distribution": [ { "importance": 5, "level": "核心", "skill_count": 10,
+                                        "covered_count": 7, "missing_count": 3, "share": 0.5882 },
+                                      { "importance": 4, "level": "重要", "skill_count": 3,
+                                        "covered_count": 1, "missing_count": 2, "share": 0.1765 } ] },
+    "skill_demands":   [ { "skill_id": 23, "skill_name": "沟通表达", "skill_category": "软技能",
+                           "importance": 5, "avg_importance": 4.8, "importance_level": "核心",
+                           "job_count": 5, "required_job_count": 5, "is_required": true,
+                           "covered": false, "course_level": null } ],
+    "covered_skills":  [ { "skill_id": 17, "skill_name": "Git", "importance": 5,
+                           "importance_level": "核心", "job_count": 8, "is_required": true,
+                           "covered": true, "course_level": "掌握", "course_count": 3 } ],
+    "missing_skills":  [ "…skill_demands 中 covered = false 的子集…" ],
+    "required_missing_skills": [ "…missing_skills 中 is_required = true 的子集…" ],
+    "job_matches":     [ "…逐个岗位的匹配明细（match_job_to_major 的输出）…" ],
+    "notes": [ "该专业课程共覆盖 12 项技能，其中 10 项被对口岗位要求。" ],
+    "explanation": { "text": "…", "summary": "…", "highlights": [], "suggestions": [],
+                     "source": "ai", "error": null },
+    "results_fingerprint": "…计算结果指纹（SHA-256）…"
+  }
+}
+```
+
+上面这套数字是 `data/campus.db` 上「软件工程」的真实输出，与 `/api/industry/gap` 的
+`summary` 逐项一致（两个实现互为交叉校验，见 `tests/test_industry.py`）。
+
+- 三张技能清单按「重要度降序 → 缺口优先 → 岗位数降序 → 名称升序」排序，`top` 只截断清单，
+  `summary` 的计数始终是全量。
+- `min_importance` 是**技能级**门槛：留下来的技能，其 `job_count` / `is_required` 仍按全部岗位汇总
+  （与 `/api/industry/gap` 同口径），不会因为某个岗位重要度低就丢掉「硬性要求」这一事实。
+- `explanation.source` 为 `ai` 或 `local`（AI 不可用/输出不合法时的 Python 兜底文案），
+  任何情况都返回 200，不会因为 AI 故障而失败。
+- **红线**：解释阶段只允许往响应里加 `explanation`；`results_fingerprint` 在解释前后必须一致，
+  否则直接抛 `RuntimeError`（AI 不能修改计算结果）。
+
+错误：`400`（缺 `major`、`min_importance`/`top` 越界）、`404`（专业不存在，附 `available` 专业清单）。
+
 ## 测试
 
 ```bash
 pytest tests -q          # tests/test_api.py 覆盖四个接口 + 业务层 + 参数化查询 + 错误码
                          # tests/test_classroom.py 覆盖 AI 找教室链路（离线，不联网）
                          # tests/test_forecast.py 覆盖食堂趋势 / 高峰 / 预测与 AI 解释边界（离线，不联网）
+                         # tests/test_industry.py 覆盖产教融合技能匹配 / 覆盖率 / 重要程度与 AI 解释边界（离线，不联网）
 ```
 
 测试会把 `data/campus.db` 复制到临时目录后只读使用，不会修改仓库里的数据库，也不会触碰 `frontend/`。
 `tests/test_forecast.py` 另建一个**值完全可控的合成库**，用来对预测公式做精确断言。
+`tests/test_industry.py` 同样另建合成库（6 项技能 / 4 门课程 / 5 个岗位），并用「直连 sqlite3
+重写一遍」的参考实现核对真实库上的覆盖率。

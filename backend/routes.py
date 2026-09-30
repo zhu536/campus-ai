@@ -7,7 +7,7 @@
 
 from flask import Blueprint, current_app, jsonify, request
 
-from . import classroom, forecast, queries
+from . import classroom, forecast, industry, queries
 from .db import connection
 from .errors import ValidationError
 from .validators import (
@@ -259,3 +259,22 @@ def industry_gap():
     major 为空时由业务层报错（400 + field=major），路由层不自己拼错误信息。
     """
     return _ok({"data": _run(queries.industry_skill_gap, _gap_params())})
+
+
+@api.get("/industry/match")
+def industry_match():
+    """产教融合技能分析：岗位技能需求 ↔ 专业课程技能覆盖（Python 匹配 + AI 只解释）。
+
+    查询参数：major(必填), industry, min_importance(1-5), top(1-100), question, explain(0/1)
+
+    与 ``/api/industry/gap`` 的区别：本接口走 ``backend/industry.py`` 的完整链路 ——
+    SQLite 只取事实 → **Python 完成集合运算与覆盖率**（match_job_to_major /
+    calculate_skill_gap）→ 连接关闭 → AI 只解释已经算好的结果，且不得改动计算结果。
+    """
+    data = industry.analyze_skill_gap(
+        _gap_params(),
+        db_path=current_app.config["DATABASE"],
+        question=request.args.get("question"),
+        explain=_explain_flag({}),
+    )
+    return _ok({"data": data})
