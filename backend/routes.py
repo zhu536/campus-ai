@@ -136,14 +136,23 @@ def _forecast_params():
 
 
 def _canteen_section(section):
-    """跑一张食堂报表：Python 统计/预测 → 连接关闭 → AI 只解释结果（见 backend/forecast.py）。"""
-    data = forecast.analyze_canteen(
+    """跑一张食堂报表：Python 统计/预测 → 连接关闭 → AI 只解释结果（见 backend/forecast.py）。
+
+    响应里除了 ``data`` 本身，还把底层报表放在 ``data.report``、并按需把
+    ``data.series``（趋势接口的按天明细）平铺到顶层：``report.trend.series``
+    本来就算好了，但只暴露 ``trend`` 片段时前端拿不到逐日客流，无法按任意日期
+    窗口重绘趋势图。这里只做「搬运」，不做任何额外计算或口径变更。
+    """
+    report = forecast.analyze_canteen(
         _forecast_params(),
         db_path=current_app.config["DATABASE"],
         explain=_explain_flag({}),
         sections=(section,),
     )
-    return _ok({"data": data})
+    payload = dict(report)
+    payload["report"] = report
+    payload["series"] = (report.get("trend") or {}).get("series", [])
+    return _ok({"data": payload})
 
 
 @api.get("/classrooms/available")
@@ -232,6 +241,19 @@ def canteens_forecast():
     预测由 Python 用均值与加减法完成（不训练任何模型），AI 只解释结果。
     """
     return _canteen_section("forecast")
+
+
+@api.get("/meta/semesters")
+def meta_semesters():
+    """元信息：库里真实有排课记录的学期清单（只读，供前端下拉框）。
+
+    响应：``{"status": "ok", "data": {"semesters": ["2025-2026-1"], "count": 1, "default": "2025-2026-1"}}``
+
+    前端用它渲染「学期」下拉框，并据此判断某个学期是否有数据：
+    请求没有数据 → 由前端走「保持上一份快照」的降级分支，后端不会返回假数据。
+    """
+    data = _run(queries.list_semesters, {})
+    return _ok({"data": data})
 
 
 @api.get("/industry/skills")

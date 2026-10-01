@@ -223,6 +223,13 @@ question
 }
 ```
 
+响应里同时给出两种等价形态，便于前端按窗口重绘趋势图：
+
+- `data.trend`：本节（趋势）报表本体；`data.peak` / `data.forecast` 同理对应各自接口。
+- `data.report`：底层完整报表（含被选中的那一节）。
+- `data.series`：**趋势接口的按天客流明细**（`report.trend.series` 的平铺），仅 `/api/canteens/trend` 有值，
+  `/api/canteens/peak` 与 `/api/canteens/forecast` 返回空数组。前端按 `date_from` / `date_to` 切换数据窗口时用它。
+
 `trend.direction`：`up` / `down` / `flat`（前后半段日均人流变化率在 ±`flat_tolerance` 内即为 `flat`）。
 
 ## 2.2 GET /api/canteens/peak

@@ -10,7 +10,7 @@
     6. 非法参数返回合理的 HTTP 状态码（400 / 404 / 405 / 503）
     7. 业务查询函数与 Flask 路由分离：业务函数可直接用 sqlite3 连接调用
     8. 覆盖四个接口的正常路径与边界
-    9. 不修改 frontend（测试只读 data/，不触碰 frontend/）
+    9. 不修改 frontend（测试只读 data/ 与 frontend/，不写入任何前端文件）
 
 测试数据来源：把真实库 ``data/campus.db`` 复制到临时目录后只读使用，
 因此既能验证真实数据分布，也不会写坏仓库里的数据库。
@@ -32,7 +32,8 @@ from backend import queries  # noqa: E402
 from backend.app import create_app  # noqa: E402
 
 REAL_DB = os.path.join(PROJECT_ROOT, "data", "campus.db")
-SEMESTER = "2025-2026-1"
+SEMESTER = "2025-2026-1"          # 秋季学期
+SEMESTER_SPRING = "2025-2026-2"   # 春季学期（scripts/make_data.py 同时生成两个学期）
 
 pytestmark = pytest.mark.skipif(
     not os.path.isfile(REAL_DB),
@@ -328,11 +329,38 @@ def test_available_classrooms_unknown_semester_404(client):
     assert SEMESTER in payload["error"]["available"]
 
 
-def test_available_classrooms_weekday_without_semester_uses_single_semester(client):
-    """库里只有一个学期时，可以省略 semester，业务层自动补齐。"""
+def test_available_classrooms_weekday_requires_semester_when_multiple_exist(client):
+    """库里有多个学期时，只给 weekday 无法确定学期，必须报 400 并列出可选学期。
+
+    （单学期自动补齐的行为已被多学期数据取代：见 backend/queries.py 的
+    「len(available_semesters) == 1」分支。）
+    """
     status, payload = call(client, "/api/classrooms/available", weekday=3, period_start=1, period_end=2)
-    assert status == 200
-    assert payload["data"]["query"]["semester"] == SEMESTER
+    assert status == 400
+    assert payload["error"]["field"] == "semester"
+    assert SEMESTER in payload["error"]["message"]
+    assert SEMESTER_SPRING in payload["error"]["message"]
+
+
+def test_available_classrooms_explicit_semester_filters_that_semester(client, conn):
+    """显式传 semester 时按该学期过滤，且与独立参考查询一致（两个学期都可查）。"""
+    for semester in (SEMESTER, SEMESTER_SPRING):
+        status, payload = call(
+            client, "/api/classrooms/available",
+            weekday=3, period_start=1, period_end=2, semester=semester,
+        )
+        assert status == 200, semester
+        assert payload["data"]["query"]["semester"] == semester
+
+        expected = {
+            row["room_id"]
+            for row in rooms_matching(
+                conn, weekday=3, period_start=1, period_end=2, semester=semester,
+            )
+        }
+        returned = {room["room_id"] for room in payload["data"]["rooms"]}
+        assert returned <= expected, semester
+        assert payload["data"]["total"] >= len(returned), semester
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +752,20 @@ def test_every_response_is_json_and_serializable(client):
 
 
 def test_frontend_folder_is_untouched():
-    """测试只读取数据与后端代码，不应产生 frontend 目录下的任何文件。"""
+    """前端大屏是正式交付物：允许 frontend/ 下存在前端文件，测试只读不写。
+
+    Day 13 起 ``frontend/index.html``（原生 HTML + CSS + JS + ECharts 大屏）属于版本库内容，
+    因此这里不再要求目录为空，只约束两件事：
+    1. 前端文件确实存在（防止误删交付物）；
+    2. 本测试不向前端目录写入任何内容（快照前后文件清单一致）。
+    """
     frontend = os.path.join(PROJECT_ROOT, "frontend")
-    if os.path.isdir(frontend):
-        assert os.listdir(frontend) == []
+    if not os.path.isdir(frontend):
+        pytest.skip("本项目未包含 frontend/ 目录，跳过前端文件校验")
+
+    before = sorted(os.listdir(frontend))
+    dashboard = os.path.join(frontend, "index.html")
+    assert os.path.isfile(dashboard), "frontend/index.html（大屏入口）应当存在"
+    assert os.path.getsize(dashboard) > 0, "frontend/index.html 不应为空文件"
+
+    assert sorted(os.listdir(frontend)) == before, "测试不应改动 frontend/ 目录内容"

@@ -7,6 +7,9 @@
     industry_skills             GET /api/industry/skills
     industry_skill_gap          GET /api/industry/gap
 
+元信息只读查询（供前端下拉框使用，不参与任何统计口径）：
+    available_semesters         GET /api/meta/semesters
+
 另外提供一个「数据底座」函数（不是接口，供 backend/forecast.py 做统计与预测）：
     canteen_meal_grid           食堂人流「日期 × 小时」明细
 
@@ -49,6 +52,28 @@ def _distinct_values(conn, column, table):
 def available_majors(conn):
     """可分析的专业清单（调试/脚本可用；API 的 404 响应里也会带上）。"""
     return _distinct_values(conn, "department", "courses")
+
+
+def available_semesters(conn):
+    """库里真实有排课记录的学期清单（供前端「学期」下拉框使用）。
+
+    只读 ``schedules.semester``：没有排课记录的学期不会出现在这里，
+    因此前端可以据此判断「用户选的学期有没有数据」，而不是把空结果当成「没有缺口/没有课」。
+    返回值按学期倒序（最新的在前）。
+    """
+    semesters = _distinct_values(conn, "semester", "schedules")
+    return sorted(semesters, reverse=True)
+
+
+def list_semesters(conn, params):
+    """``GET /api/meta/semesters`` 的业务函数：学期清单 + 默认学期。"""
+    semesters = available_semesters(conn)
+    return {
+        "semesters": semesters,
+        "count": len(semesters),
+        # 默认给最新学期；库为空时给 None，由前端决定怎么兜底。
+        "default": semesters[0] if semesters else None,
+    }
 
 
 # ---------------------------------------------------------------------------

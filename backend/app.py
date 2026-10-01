@@ -23,7 +23,7 @@ import os
 import sqlite3
 import sys
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 # 支持 `python backend/app.py` 直接运行（此时包上下文不存在，需要补 sys.path）。
@@ -42,6 +42,12 @@ else:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
 
+# 前端大屏（frontend/index.html）允许被 file:// 直接打开，此时浏览器会带 Origin: null
+# 发跨域请求。这里按请求回显 Origin（不写死 *，避免把接口暴露给任意站点），
+# 只放行只读 GET/POST，不引入 flask-cors 依赖。
+CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
+CORS_ALLOW_HEADERS = "Content-Type"
+
 
 def create_app(db_path=None):
     """创建 Flask 应用。``db_path`` 为空时用 ``CAMPUS_DB_PATH`` 或 ``data/campus.db``。"""
@@ -52,7 +58,26 @@ def create_app(db_path=None):
 
     app.register_blueprint(api, url_prefix="/api")
     _register_error_handlers(app)
+    _register_cors(app)
     return app
+
+
+def _register_cors(app):
+    """给带 Origin 头的请求回显 CORS 响应头。
+
+    只有浏览器跨域请求才会带 Origin，测试用的 ``app.test_client()`` 不带，
+    因此该钩子对既有接口的行为与测试结果都是无侵入的。
+    """
+
+    @app.after_request
+    def add_cors_headers(response):
+        origin = request.headers.get("Origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+            response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+            response.headers["Vary"] = "Origin"
+        return response
 
 
 def _error_response(status, code, message, extra=None):

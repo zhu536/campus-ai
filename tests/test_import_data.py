@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """scripts/import_data.py 的基础测试。
 
 覆盖 8 条硬要求：
@@ -33,9 +33,11 @@ RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
 EXPECTED_COUNTS = {
     "classrooms": 50,
     "courses": 100,
-    "schedules": 593,
+    # 两个学期各 593 条：2025-2026-1 秋季 + 2025-2026-2 春季
+    "schedules": 1186,
     "canteens": 5,
-    "meal_records": 3000,
+    # 秋季 75 天(3000) + 春季 137 天(5480)
+    "meal_records": 8480,
     "jobs": 100,
     "skills": 30,
     "course_skills": 300,

@@ -311,9 +311,13 @@ def test_search_returns_candidates_from_sqlite(db_path, conn):
 
 
 def test_search_maps_ai_params_to_query_params(db_path):
-    """AI 抽出的参数 → 校验后的查询参数（键名与 queries 层完全一致）。"""
+    """AI 抽出的参数 → 校验后的查询参数（键名与 queries 层完全一致）。
+
+    库里有两个学期，所以模型必须把 semester 也抽出来（否则查询层会以「无法确定学期」拒绝）。
+    """
     parser = room_search_parser(
-        capacity=8, has_projector=True, weekday=3, period_start=5, period_end=8
+        capacity=8, has_projector=True, weekday=3, period_start=5, period_end=8,
+        semester=SEMESTER,
     )
     data = classroom.search_classrooms(
         EXAMPLE_QUESTION, db_path=db_path, parser=parser, explain=False
@@ -325,9 +329,10 @@ def test_search_maps_ai_params_to_query_params(db_path):
         "weekday": 3,
         "period_start": 5,
         "period_end": 8,
+        "semester": SEMESTER,
     }
     assert data["query"] == {
-        "semester": SEMESTER,  # 库里只有一个学期，查询层自动补齐
+        "semester": SEMESTER,  # 显式指定学期，不再依赖「单学期自动补齐」
         "weekday": 3,
         "period_start": 5,
         "period_end": 8,
@@ -697,7 +702,9 @@ def test_explain_false_never_constructs_the_ai(db_path, monkeypatch):
     data = classroom.search_classrooms(
         EXAMPLE_QUESTION,
         db_path=db_path,
-        parser=room_search_parser(capacity=8, weekday=3, period_start=5, period_end=8),
+        parser=room_search_parser(
+            capacity=8, weekday=3, period_start=5, period_end=8, semester=SEMESTER
+        ),
         explain=False,
     )
     assert calls == []

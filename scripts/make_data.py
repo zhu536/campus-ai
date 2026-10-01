@@ -44,12 +44,22 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
 
 SEMESTER = "2025-2026-1"
+SEMESTER_SPRING = "2025-2026-2"
 
-# 数据时间窗口：2025-09-01(周一) ~ 2025-11-14(周五)，共 75 天
+# 数据时间窗口（秋季学期）：2025-09-01(周一) ~ 2025-11-14(周五)，共 75 天
 # = 55 个工作日 + 20 个周末日（其中 10-01~10-07 为国庆假期）
 TERM_START = date(2025, 9, 1)
 TERM_END = date(2025, 11, 14)
 HOLIDAYS = {date(2025, 10, 1) + timedelta(days=i) for i in range(7)}
+
+# 春季学期窗口：2026-03-01 ~ 2026-07-15（137 天）
+# 含清明（04-04~04-06）与劳动节（05-01~05-05）两个假期，用于区分 holiday / weekend / weekday 客流形状。
+SPRING_TERM_START = date(2026, 3, 1)
+SPRING_TERM_END = date(2026, 7, 15)
+SPRING_HOLIDAYS = (
+    {date(2026, 4, 4) + timedelta(days=i) for i in range(3)}
+    | {date(2026, 5, 1) + timedelta(days=i) for i in range(5)}
+)
 
 MIN_SCHEDULES = 520          # 课表条数下限（需求要求 ≥ 500）
 PEAK_OCCUPANCY = 0.62        # 午餐高峰座位占用系数，保证 people_count <= capacity
@@ -472,7 +482,8 @@ EXPECTED_COUNTS = {
     "courses.csv": 100,
     "schedules.csv": MIN_SCHEDULES,
     "canteens.csv": 5,
-    "meal_records.csv": 3000,
+    # 秋季 75 天(3000) + 春季 137 天(5480) 两段窗口合计
+    "meal_records.csv": 8480,
     "jobs.csv": 100,
     "skills.csv": 30,
     "course_skills.csv": 300,
@@ -618,8 +629,12 @@ def assign_sessions(courses):
         index += 1
 
 
-def place_once(order, available_rooms):
-    """按给定顺序贪心排课；失败返回 None。保证同一教室同一时间只有一门课。"""
+def place_once(order, available_rooms, semester=None):
+    """按给定顺序贪心排课；失败返回 None。保证同一教室同一时间只有一门课。
+
+    ``semester`` 只写进结果行；冲突判定仍是「同一学期内」，跨学期可以复用同一教室与教师。
+    """
+    semester = SEMESTER if semester is None else semester
     room_busy = defaultdict(set)       # room_id -> {(weekday, period)}
     teacher_busy = defaultdict(set)    # teacher -> {(weekday, period)}
     placed = []
@@ -669,7 +684,7 @@ def place_once(order, available_rooms):
             placed.append({
                 "course_id": course["course_id"],
                 "room_id": room_id,
-                "semester": SEMESTER,
+                "semester": semester,
                 "weekday": weekday,
                 "period_start": period_start,
                 "period_end": period_end,
@@ -681,8 +696,12 @@ def place_once(order, available_rooms):
     return placed
 
 
-def gen_schedules(courses, classrooms):
-    """排课：优先安排大班课程，避免教室与教师时间冲突（周一至周五）。"""
+def gen_schedules(courses, classrooms, semester=None):
+    """排课：优先安排大班课程，避免教室与教师时间冲突（周一至周五）。
+
+    ``semester`` 默认秋季学期；春季学期复用同一批课程与教室，独立排一次课。
+    """
+    semester = SEMESTER if semester is None else semester
     available = [r for r in classrooms if r["status"] == "available"]
     teachers = build_teacher_pool()
     for index, course in enumerate(courses):
@@ -699,7 +718,7 @@ def gen_schedules(courses, classrooms):
         order = list(base_order)
         if attempt:                     # 第一次保持容量降序，之后打乱顺序重试
             random.shuffle(order)
-        placed = place_once(order, available)
+        placed = place_once(order, available, semester)
         if placed is not None:
             placed.sort(key=lambda s: (s["weekday"], s["period_start"], s["room_id"]))
             for schedule_id, row in enumerate(placed, start=1):
@@ -741,26 +760,33 @@ def in_business_hours(canteen, hour):
     return any(start <= minute < end for start, end in service_windows(canteen))
 
 
-def day_mode(day):
-    if day in HOLIDAYS:
+def day_mode(day, holidays=None):
+    """判断某天的客流形状：holiday / weekend / weekday（holidays 为空时用秋季学期假期）。"""
+    holiday_set = HOLIDAYS if holidays is None else holidays
+    if day in holiday_set:
         return "holiday"
     if day.weekday() >= 5:
         return "weekend"
     return "weekday"
 
 
-def gen_meal_records():
-    """3000 条就餐记录：75 天 × 每天 8 个采集小时 × 5 个食堂。
+def gen_meal_records(start=None, end=None, holidays=None):
+    """就餐记录：按天 × 采集小时 × 5 个食堂生成（默认秋季 75 天 = 3000 条）。
 
     每个食堂按自己的营业时段取采集小时（琼阁苑午休 14:00-16:30 不生成记录、
     闭餐早的时段不生成夜宵；一食堂 21 点只记一条夜宵 other 记录），
     午餐 11:00-13:00 形成明显高峰。
+
+    参数化后同一逻辑可以生成多个学期窗口（春季学期传 SPRING_TERM_START/END）。
+    返回时按 (日期, 小时, 食堂) 排序并从 1 重新编号；跨窗口的主键偏移由调用方处理。
     """
+    start = TERM_START if start is None else start
+    end = TERM_END if end is None else end
     records = []
     record_id = 0
-    day = TERM_START
-    while day <= TERM_END:
-        mode = day_mode(day)
+    day = start
+    while day <= end:
+        mode = day_mode(day, holidays)
         factor_low, factor_high = DAY_FACTOR[mode]
         day_factor = random.uniform(factor_low, factor_high)
         for canteen_id, canteen in enumerate(CANTEENS, start=1):
@@ -969,21 +995,40 @@ def gen_jobs_and_job_skills(skills):
 
 
 def generate_all():
+    """生成全部模拟数据。
+
+    学期策略（2025-2026-1 秋季 + 2025-2026-2 春季）：
+        1. 先按原顺序生成秋季学期的全部数据，保证既有 CSV 的历史内容不被扰动；
+        2. 冻结此时的随机状态，再派生春季学期的数据（排课 + 就餐记录），
+           因此春季数据可复现，同时不会改变秋季数据的取值。
+        两学期的排课主键（schedule_id）与就餐记录主键（record_id）全局连续。
+    """
     classrooms = gen_classrooms()
     courses = gen_courses()
     skills = gen_skills()
     assign_sessions(courses)
-    schedules = gen_schedules(courses, classrooms)
+    schedules_fall = gen_schedules(courses, classrooms, SEMESTER)
     canteens = gen_canteens()
-    meal_records = gen_meal_records()
+    meal_records_fall = gen_meal_records()
     jobs, job_skills = gen_jobs_and_job_skills(skills)
     course_skills = gen_course_skills(courses, skills)
+
+    # 之后所有随机数都走「春季学期」这条独立分支（不再改动上面已生成的秋季数据）
+    schedules_spring = gen_schedules(courses, classrooms, SEMESTER_SPRING)
+    for offset, row in enumerate(schedules_spring, start=len(schedules_fall) + 1):
+        row["schedule_id"] = offset
+
+    meal_records_spring = gen_meal_records(SPRING_TERM_START, SPRING_TERM_END, SPRING_HOLIDAYS)
+    offset = len(meal_records_fall)
+    for index, row in enumerate(meal_records_spring, start=1):
+        row["record_id"] = offset + index
+
     return {
         "classrooms": classrooms,
         "courses": courses,
-        "schedules": schedules,
+        "schedules": schedules_fall + schedules_spring,
         "canteens": canteens,
-        "meal_records": meal_records,
+        "meal_records": meal_records_fall + meal_records_spring,
         "jobs": jobs,
         "skills": skills,
         "course_skills": course_skills,
@@ -1183,6 +1228,23 @@ class Checker:
                         teacher_conflicts.append("教师 {} 周{} 时段重叠".format(key[1], key[2]))
         self.check(not teacher_conflicts, "同一教师同一时间无两门课（冲突 {} 组）".format(len(teacher_conflicts)))
 
+        # 4.2b 学期覆盖：秋季 + 春季都要有足量排课，且学期取值合法
+        per_semester = defaultdict(int)
+        for row in schedules:
+            per_semester[row["semester"]] += 1
+        missing_semesters = [
+            name for name in (SEMESTER, SEMESTER_SPRING) if per_semester.get(name, 0) < 500
+        ]
+        self.check(
+            not missing_semesters,
+            "两个学期各有 >= 500 条排课（{}）".format(
+                "、".join("{}={}".format(name, per_semester.get(name, 0))
+                          for name in (SEMESTER, SEMESTER_SPRING))
+            ),
+        )
+        for name in missing_semesters:
+            self.info("{} 排课不足：{} 条".format(name, per_semester.get(name, 0)))
+
         # 4.3 字段合法性
         bad_field = []
         for row in schedules:
@@ -1197,7 +1259,7 @@ class Checker:
                 bad_field.append("start_time 与节次不一致")
             if row["end_time"] != PERIOD_END_TIME[int(row["period_end"])]:
                 bad_field.append("end_time 与节次不一致")
-            if row["semester"] != SEMESTER:
+            if row["semester"] not in (SEMESTER, SEMESTER_SPRING):
                 bad_field.append("semester 异常")
             if row["course_id"] not in courses:
                 bad_field.append("course_id 不存在")
@@ -1351,8 +1413,11 @@ class Checker:
             {hour: int(hour_mean[hour]) for hour in sorted(hour_mean)}))
 
         # 6.3 工作日 / 周末 / 假期模式不同
+        #     两个学期的假期集合不同（国庆 / 清明+劳动节），按日期归属选择对应集合判断。
         def mode_of(row):
-            return day_mode(date.fromisoformat(row["record_date"]))
+            day = date.fromisoformat(row["record_date"])
+            holidays = HOLIDAYS if day < SPRING_TERM_START else SPRING_HOLIDAYS
+            return day_mode(day, holidays)
         by_mode = defaultdict(list)
         hours_by_mode = defaultdict(set)
         for row in records:
@@ -1375,8 +1440,11 @@ class Checker:
         waits = [float(r["wait_minutes"]) for r in records]
         correlation = pearson(occupancy, waits)
         self.check(correlation > 0.5, "拥挤度与等待时间正相关（相关系数 {:.3f}）".format(correlation))
-        self.info("就餐记录天数 {}，覆盖食堂 {} 个".format(
-            len({r["record_date"] for r in records}), len(canteen_name)))
+        self.info("就餐记录天数 {}（{} ~ {}），覆盖食堂 {} 个".format(
+            len({r["record_date"] for r in records}),
+            min(r["record_date"] for r in records),
+            max(r["record_date"] for r in records),
+            len(canteen_name)))
 
         # 6.5 每个食堂的营业时间与采集小时（真实档案核对）
         for canteen_id in sorted(canteen_name):
