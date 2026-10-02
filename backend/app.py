@@ -47,6 +47,8 @@ DEFAULT_PORT = 5000
 # 只放行只读 GET/POST，不引入 flask-cors 依赖。
 CORS_ALLOW_METHODS = "GET, POST, OPTIONS"
 CORS_ALLOW_HEADERS = "Content-Type"
+#: 预检结果缓存秒数：同一页面反复切学期/快照时不必每次都发 OPTIONS。
+CORS_MAX_AGE = "600"
 
 
 def create_app(db_path=None):
@@ -67,16 +69,29 @@ def _register_cors(app):
 
     只有浏览器跨域请求才会带 Origin，测试用的 ``app.test_client()`` 不带，
     因此该钩子对既有接口的行为与测试结果都是无侵入的。
+
+    预检（OPTIONS）额外做两件事，避免浏览器在边界场景下直接拦住请求：
+        1. 回显 ``Access-Control-Request-Headers``（浏览器要什么就答应什么），
+           而不是死守一个固定的 Content-Type 列表；
+        2. 回 ``Access-Control-Max-Age``，省掉重复预检。
+    仍然只回显请求方 Origin，不放行任意站点。
     """
 
     @app.after_request
     def add_cors_headers(response):
         origin = request.headers.get("Origin")
         if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
-            response.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
-            response.headers["Vary"] = "Origin"
+            headers = response.headers
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+            headers["Access-Control-Allow-Headers"] = (
+                request.headers.get("Access-Control-Request-Headers") or CORS_ALLOW_HEADERS
+            )
+            headers["Access-Control-Max-Age"] = CORS_MAX_AGE
+            vary = "Origin"
+            if request.method == "OPTIONS":
+                vary += ", Access-Control-Request-Headers"
+            headers["Vary"] = vary
         return response
 
 

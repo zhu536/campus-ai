@@ -1163,3 +1163,98 @@ def test_normalize_wraps_invalid_payloads():
     for payload in ("not a dict", [1, 2], None):
         with pytest.raises(ValidationError):
             normalize(payload)
+
+
+# ---------------------------------------------------------------------------
+# 12. 学期参数校验（多学期数据后新增的边界加固）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2025-2026-1", "2025-2026-1"),
+        ("2025-2026-2", "2025-2026-2"),
+        ("2025-2026-1学期", "2025-2026-1"),
+        ("  2025-2026-1 学期 ", "2025-2026-1"),
+        ("2025-2026-1 semester", "2025-2026-1"),
+    ],
+)
+def test_semester_is_normalized_to_canonical_shape(raw, expected):
+    """模型常把「学期」两个字一起抄进参数：必须收敛成 2025-2026-1，而不是拿着去查库撞 404。"""
+    intent, params = validate_intent({"intent": "room_search", "weekday": 3, "semester": raw})
+    assert intent == "room_search"
+    assert params["semester"] == expected
+
+
+@pytest.mark.parametrize(
+    "raw", ["2025-2026-3", "2025-2026", "春季学期", "2025/2026/1", "20252026-1", "2025-2026-10"]
+)
+def test_malformed_semester_is_rejected_with_field(raw):
+    """形状不对的学期值在解析层就被拦住（400），而不是拿一个不可能存在的值去查库。"""
+    with pytest.raises(ValidationError) as excinfo:
+        validate_intent({"intent": "room_search", "weekday": 3, "semester": raw})
+    assert excinfo.value.field == "semester"
+
+
+def test_semester_alias_term_is_accepted():
+    """term / semester_name 等写法收敛到 semester（与 has_projector 的别名处理一致）。"""
+    _, params = validate_intent({"intent": "room_search", "weekday": 3, "term": "2025-2026-1学期"})
+    assert params["semester"] == "2025-2026-1"
+
+
+def test_contract_documents_semester_shape():
+    """给模型的字段契约必须写清学期形状，否则模型只能靠猜。"""
+    contract = render_contract()
+    assert "semester" in contract
+    assert "YYYY-YYYY-N" in contract
+
+
+# ---------------------------------------------------------------------------
+# 13. 截断 JSON 的兜底（max_tokens 用尽，真实网关会出现 finish_reason=length）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "text,expected_summary",
+    [
+        ('{"summary": "这句话被截断了', "这句话被截断了"),
+        ('{"summary": "正常", "highlights": ["第一点", "第二点被截断', "正常"),
+        ('{"summary": "A", "highlights": ["x"], "suggestions": ["y", "z', "A"),
+        ('{"summary": "A", "highl', "A"),
+        ('```json\n{"summary": "代码块里被截断', "代码块里被截断"),
+    ],
+)
+def test_truncated_json_is_repaired_instead_of_dropped(text, expected_summary):
+    """被 max_tokens 截断的回复要能抢救出已生成的部分，而不是整条降级。"""
+    payload = ai_parser.extract_json_object(text)
+    assert isinstance(payload, dict)
+    assert payload["summary"] == expected_summary
+
+
+def test_unrepairable_truncation_reports_dedicated_error_code():
+    """连字段值都没生成完时给出专用错误码，方便定位「是 token 不够，不是模型胡说」。"""
+    with pytest.raises(ai_parser.AIParserError) as excinfo:
+        ai_parser.extract_json_object('{"summary": ')
+    assert excinfo.value.code == ai_parser.ERROR_TRUNCATED_RESPONSE
+    assert "max_tokens" in excinfo.value.message
+
+
+def test_structurally_complete_garbage_keeps_invalid_json_code():
+    """结构完整却解析不了的输入不算截断，错误码语义保持不变。"""
+    with pytest.raises(ai_parser.AIParserError) as excinfo:
+        ai_parser.extract_json_object("{不是合法JSON}")
+    assert excinfo.value.code == ai_parser.ERROR_INVALID_JSON
+
+
+def test_default_max_tokens_leaves_room_for_reasoning_models():
+    """带推理的网关会先花掉推理 token：默认预算必须明显大于 800，避免 JSON 被截断。"""
+    assert ai_parser.DEFAULT_MAX_TOKENS >= 1024
+
+
+def test_load_config_uses_the_larger_token_budget_by_default():
+    """没有显式配置 AI_MAX_TOKENS 时，请求体必须用加固后的默认预算（不是 800）。"""
+    config = ai_parser.load_config(env={"AI_API_KEY": FAKE_API_KEY})
+    assert config["max_tokens"] == ai_parser.DEFAULT_MAX_TOKENS
+    assert config["max_tokens"] >= 1024
+
+    parser = ai_parser.IntentParser(config=config, session=FakeSession())
+    assert parser.request_payload("找个教室")["max_tokens"] == ai_parser.DEFAULT_MAX_TOKENS

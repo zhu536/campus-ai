@@ -769,3 +769,101 @@ def test_frontend_folder_is_untouched():
     assert os.path.getsize(dashboard) > 0, "frontend/index.html 不应为空文件"
 
     assert sorted(os.listdir(frontend)) == before, "测试不应改动 frontend/ 目录内容"
+
+
+# ---------------------------------------------------------------------------
+# 边界加固：缺失参数的友好 400 / 学期参数规范化 / CORS 预检
+# ---------------------------------------------------------------------------
+
+def test_industry_gap_missing_major_returns_available_choices(client):
+    """缺 major 的 400 要直接告诉调用方有哪些可选专业，不用先撞一次 404 才知道。"""
+    status, payload = call(client, "/api/industry/gap")
+    assert status == 400
+    assert payload["error"]["field"] == "major"
+    assert "软件工程" in payload["error"]["available"]
+
+
+def test_industry_match_missing_major_returns_available_choices(client):
+    status, payload = call(client, "/api/industry/match")
+    assert status == 400
+    assert payload["error"]["field"] == "major"
+    assert "软件工程" in payload["error"]["available"]
+
+
+def test_industry_gap_accepts_major_aliases(client):
+    """major / major_name / profession / department / skill 都指向同一个专业名。"""
+    for name in ("major", "major_name", "profession", "department", "skill"):
+        status, payload = call(client, "/api/industry/gap", **{name: "软件工程"})
+        assert status == 200, name
+        assert payload["data"]["summary"]["major"] == "软件工程"
+
+
+def test_available_classrooms_normalizes_semester_suffix(client):
+    """模型/用户把「学期」两个字带进参数时，规范化后仍能查到该学期（不再 404）。"""
+    status, payload = call(
+        client, "/api/classrooms/available",
+        weekday=3, period_start=1, period_end=2, semester=SEMESTER + "学期",
+    )
+    assert status == 200
+    assert payload["data"]["query"]["semester"] == SEMESTER
+
+
+def test_available_classrooms_rejects_malformed_semester(client):
+    """形状不对的学期值在解析层就报 400（而不是拿它去查库报 404）。"""
+    status, payload = call(
+        client, "/api/classrooms/available",
+        weekday=3, period_start=1, period_end=2, semester="春季",
+    )
+    assert status == 400
+    assert payload["error"]["field"] == "semester"
+
+
+def test_both_semesters_return_consistent_shapes(client):
+    """双学期都要返回同样结构的数据（前端切学期时不至于拿到空壳/异常）。"""
+    for semester in (SEMESTER, SEMESTER_SPRING):
+        status, payload = call(
+            client, "/api/classrooms/available",
+            weekday=3, period_start=5, period_end=8, semester=semester,
+        )
+        assert status == 200, semester
+        data = payload["data"]
+        assert data["query"]["semester"] == semester
+        assert data["summary"]["candidate_count"] >= data["summary"]["available_count"]
+        assert isinstance(data["rooms"], list)
+
+
+def test_empty_window_trend_returns_empty_series_with_note(client):
+    """日期窗口没有任何记录时：200 + 空数组 + 说明，不是 500、也不是假数据。"""
+    status, payload = call(
+        client, "/api/canteens/trend",
+        date_from="2027-01-01", date_to="2027-01-31", explain=0,
+    )
+    assert status == 200
+    data = payload["data"]
+    assert data["series"] == []
+    assert data["trend"]["summary"]["records"] == 0
+    assert data["notes"], "空窗口必须给出说明，避免用户以为「没有客流」"
+
+
+def test_cors_preflight_echoes_requested_headers(client):
+    """file:// 打开大屏时的预检：回显请求头 + 只回显请求方 Origin，避免被浏览器拦下。"""
+    response = client.options(
+        "/api/industry/gap",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "content-type, x-requested-with",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == "null"
+    assert response.headers["Access-Control-Allow-Headers"] == "content-type, x-requested-with"
+    assert "GET" in response.headers["Access-Control-Allow-Methods"]
+    assert response.headers["Access-Control-Max-Age"]
+
+
+def test_cors_headers_are_present_on_error_responses(client):
+    """4xx 也要带 CORS 头，否则浏览器只会报「CORS 错误」，看不到真正的错误原因。"""
+    response = client.get("/api/industry/gap", headers={"Origin": "null"})
+    assert response.status_code == 400
+    assert response.headers["Access-Control-Allow-Origin"] == "null"

@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, jsonify, request
 from . import classroom, forecast, industry, queries
 from .db import connection
 from .errors import ValidationError
+from .validate import check_semester
 from .validators import (
     DIMENSIONS,
     ROOM_TYPES,
@@ -41,6 +42,19 @@ def _run(business_function, params):
         return business_function(conn, params)
 
 
+def _semester_param():
+    """学期参数：空串按「没传」处理；有值时规范化并校验形状。
+
+    与 AI 路径（``backend/validate.check_semester``）共用同一套规则，避免「同一参数、
+    两条入口、两种行为」：``2025-2026-1学期`` 在两边都会被收敛成 ``2025-2026-1``，
+    形状不对的取值在解析层就 400，而不是拿它去查库报 404。
+    """
+    raw = request.args.get("semester")
+    if raw is None or not raw.strip():
+        return None
+    return check_semester(raw, "semester")
+
+
 def _classroom_params():
     period_start, period_end = period_range(request.args)
     return {
@@ -52,7 +66,7 @@ def _classroom_params():
         "weekday": int_param(request.args, "weekday", minimum=1, maximum=7),
         "period_start": period_start,
         "period_end": period_end,
-        "semester": text_param(request.args, "semester", max_length=30),
+        "semester": _semester_param(),
         # 本接口只回答「哪些教室现在可用」，因此状态固定按 available 过滤。
         "status": "available",
         "limit": int_param(request.args, "limit", default=10, minimum=1, maximum=100),
@@ -102,11 +116,50 @@ def _explain_flag(body):
 
 def _gap_params():
     return {
-        "major": text_param(request.args, "major", max_length=100),
+        "major": _major_param(),
         "industry": text_param(request.args, "industry", max_length=50),
         "min_importance": int_param(request.args, "min_importance", default=1, minimum=1, maximum=5),
         "top": int_param(request.args, "top", default=20, minimum=1, maximum=100),
     }
+
+
+#: major 的等价参数名：同一个需求换个名字（profession / department / skill）不该直接 400。
+MAJOR_PARAM_NAMES = ("major", "major_name", "profession", "department", "skill")
+
+
+def _major_param():
+    """取专业名：按 :data:`MAJOR_PARAM_NAMES` 依次尝试，都为空返回 ``None``。"""
+    for name in MAJOR_PARAM_NAMES:
+        value = text_param(request.args, name, max_length=100)
+        if value:
+            return value
+    return None
+
+
+def _available_majors():
+    """错误提示里的可选专业清单（只读）。
+
+    查库失败时返回空清单：**提示信息本身不应该再失败一次**（数据库不可用时另有 503）。
+    """
+    try:
+        with connection(current_app.config["DATABASE"]) as conn:
+            return queries.available_majors(conn)
+    except Exception:  # pragma: no cover - 仅在数据库不可用时走到
+        return []
+
+
+def _require_major(params):
+    """必填校验：缺 major 时返回带「可选专业清单」的 400，而不是让人再撞一次 404。
+
+    只补错误信息与参数别名，不改变业务口径：专业是否存在仍由业务层判断（404）。
+    """
+    if not params.get("major"):
+        raise ValidationError(
+            "缺少必填参数 major（专业名，例如「软件工程」）",
+            field="major",
+            available=_available_majors(),
+        )
+    return params
 
 
 def _forecast_params():
@@ -278,9 +331,9 @@ def industry_gap():
 
     查询参数：major(必填), industry, min_importance(1-5), top(1-100)
 
-    major 为空时由业务层报错（400 + field=major），路由层不自己拼错误信息。
+    major 为空时由这一层报错（400 + field=major + available 可选清单），路由层不自己拼业务口径。
     """
-    return _ok({"data": _run(queries.industry_skill_gap, _gap_params())})
+    return _ok({"data": _run(queries.industry_skill_gap, _require_major(_gap_params()))})
 
 
 @api.get("/industry/match")
@@ -294,7 +347,7 @@ def industry_match():
     calculate_skill_gap）→ 连接关闭 → AI 只解释已经算好的结果，且不得改动计算结果。
     """
     data = industry.analyze_skill_gap(
-        _gap_params(),
+        _require_major(_gap_params()),
         db_path=current_app.config["DATABASE"],
         question=request.args.get("question"),
         explain=_explain_flag({}),

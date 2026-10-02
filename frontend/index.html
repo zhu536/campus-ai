@@ -1004,6 +1004,7 @@ html,body{
     semesters: (DATA.semesterOrder || ['2025-2026-1']).slice(),
     snapshot: DATA.snapshot,
     window: null,             // {from,to,daily,source} 当前食堂趋势窗口
+    snapshotNotice: false,    // 当前 notice 是否由「快照/日期边界」产生（用于精准清除）
     apiOnline: false,
     reqSeq: 0
   };
@@ -1017,16 +1018,19 @@ html,body{
     return table[first] || {};
   }
 
-  /** 某学期的可选快照日（列表来自真实数据窗口，切换学期时重建）。 */
+  /** 某学期的可选快照日：**只取该学期自己的数据窗口**。
+   *
+   * 历史行为会把「另一个学期」的 windowTo 也塞进当前学期的下拉里，切到
+   * 2025-2026-2 后仍能选到 2025-11-14（秋季）——选中后窗口落在当前学期之外，
+   * 图表却按当前学期兜底重绘，出现「下拉写 2025-11-14、图上是 2026 年数据」的
+   * 双学期数据不一致。这里改成严格按学期取，取不到就返回空数组，由调用方给提示。
+   */
   function snapshotsOf(name) {
-    var term = termData(name);
+    var key = name || state.semester;
+    var term = (DATA.semesters || {})[key];
+    if (!term) { return []; }
     var list = [];
-    if (term.windowTo) { list.push(term.windowTo); }
-    (DATA.semesterOrder || []).forEach(function (key) {
-      if (key === (name || state.semester)) { return; }
-      var other = termData(key);
-      if (other.windowTo) { list.push(other.windowTo); }
-    });
+    if (isDateStr(term.windowTo)) { list.push(term.windowTo); }
     return list;
   }
 
@@ -1050,7 +1054,21 @@ html,body{
   function toDate(str) { return new Date(String(str) + 'T00:00:00'); }
   function fmtDate(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
   function dayDiff(a, b) { return Math.round((toDate(b) - toDate(a)) / 86400000); }
+
+  /** 是否是「真实存在」的 YYYY-MM-DD。
+   *
+   * 边界防护：日期来自下拉、快照配置或外部参数时，非法值（空串 / 2027 年之外的
+   * 手写值 / 2025-02-30 这类不存在的日期）一律先挡下来，避免 toDate 得到
+   * Invalid Date 之后被格式化成 NaN-NaN-NaN 发去后端、或在 .slice()/.map() 上抛错白屏。
+   */
+  function isDateStr(str) {
+    if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) { return false; }
+    var d = toDate(str);
+    return !isNaN(d.getTime()) && fmtDate(d) === str;
+  }
+
   function windowRange(center) {
+    if (!isDateStr(center)) { return null; }   // 非法日期：不发请求、不生成 NaN 区间
     var d = toDate(center);
     var from = new Date(d.getTime()); from.setDate(from.getDate() - WINDOW_SPAN_DAYS);
     var to = new Date(d.getTime()); to.setDate(to.getDate() + WINDOW_SPAN_DAYS);
@@ -1126,22 +1144,32 @@ html,body{
     return { name: majorName, summary: {}, all: [], skills: [], urgent: [] };
   }
 
-  /** 当前学期内置的「日期 → 全校客流」映射 → 指定日期窗口的取数（不发请求也不缺数据）。 */
+  /** 当前学期内置的「日期 → 全校客流」映射 → 指定日期窗口的取数（不发请求也不缺数据）。
+   *
+   * 三种边界都在这里收口，保证永远返回「结构完整」的窗口对象（图表拿到的可能是空数组）：
+   *   1. 当前学期没有内置数据（例如库里新增了学期但前端还没导出数据）→ 空数组 + 说明；
+   *   2. 快照日期非法（空串 / NaN）→ 回退该学期数据末端，不再生成 NaN 区间；
+   *   3. 窗口内没有记录（跨到无数据的月份）→ 回退该学期数据末端 14 天，保证图表不空。
+   */
   function snapshotWindow(center) {
-    var term = termData();
+    var term = (DATA.semesters || {})[state.semester] || {};
     var map = term.window || {};
-    var range = windowRange(center);
     var dates = Object.keys(map).sort();
-    var inRange = dates.filter(function (d) { return d >= range.from && d <= range.to; });
-    // 窗口内没有记录（例如跨到无数据的月份）时退回该学期数据末端 14 天，保证图表不空
+    if (!dates.length) {
+      return { from: '', to: '', daily: [], dates: [], source: 'empty', fallback: '（该学期暂无快照数据）' };
+    }
+    var range = windowRange(center);
+    var inRange = range
+      ? dates.filter(function (d) { return d >= range.from && d <= range.to; })
+      : [];
     var fallback = null;
-    if (!inRange.length && dates.length) {
+    if (!inRange.length) {
       inRange = dates.slice(-14);
-      fallback = '（窗口内无记录，已回退该学期数据末端）';
+      fallback = range ? '（窗口内无记录，已回退该学期数据末端）' : '（快照日期无效，已回退该学期数据末端）';
     }
     return {
-      from: inRange.length ? inRange[0] : range.from,
-      to: inRange.length ? inRange[inRange.length - 1] : range.to,
+      from: inRange[0],
+      to: inRange[inRange.length - 1],
       daily: inRange.map(function (d) { return map[d]; }),
       dates: inRange,
       source: 'snapshot',
@@ -1696,6 +1724,12 @@ html,body{
     else { label.innerHTML = ''; box.classList.remove('show'); }
   }
 
+  /** 快照相关的提示（用同一块 notice 区域），并记住来源，避免误清掉「学期无数据」提示。 */
+  function showSnapshotNotice(text) {
+    state.snapshotNotice = !!text;
+    setNotice(text);
+  }
+
   /** 下拉选项：数据里真实存在的两学期 + 业务预留但暂无数据的学期。 */
   function semesterChoices() {
     var list = (DATA.semesterOrder || []).filter(function (k) { return !!(DATA.semesters || {})[k]; });
@@ -1727,18 +1761,22 @@ html,body{
    * 选中项不在选项里的错位（例如先选春季再选无数据的 2026-2027-1）。
    */
   function applyStateCascade(preferredSnapshot) {
-    var term = termData();
     var snapshots = snapshotsOf(state.semester);
     if (preferredSnapshot && snapshots.indexOf(preferredSnapshot) >= 0) {
       state.snapshot = preferredSnapshot;
     } else if (snapshots.indexOf(state.snapshot) < 0) {
-      state.snapshot = snapshots[0] || state.snapshot;
+      // 该学期没有自己的快照时明确置空，不再沿用上一个学期的日期（双学期串数据的根因）
+      state.snapshot = snapshots[0] || '';
     }
     state.window = snapshotWindow(state.snapshot);
     setSnapshotSelectOptions();
     applyTermCards(state.semester);
     renderRoom(currentRoomDim());
     renderCanteen(state.canteenMode || 'hour');
+    if (!snapshots.length && !state.snapshotNotice) {
+      showSnapshotNotice('学期 <b>' + escapeHtml(state.semester || '') +
+        '</b> 暂无可用数据快照，图表按空数据显示。');
+    }
   }
 
   /** 切换学期：有数据显示该学期，无数据保持上一份快照并明确提示（不报错、不空）。 */
@@ -1746,6 +1784,7 @@ html,body{
     if (!name) { return; }
     var previousSnapshot = state.snapshot;
     state.selectedSemester = name;
+    state.snapshotNotice = false;      // 切学期时由本函数自己决定提示内容
     var hasData = semesterHasData(name);
     var field = $('semester-field');
     if (field) { field.classList.toggle('loading', !hasData); }
@@ -1767,7 +1806,13 @@ html,body{
     var sel = $('snapshot-select');
     if (!sel) { return; }
     var list = snapshotsOf(state.semester);
-    if (list.indexOf(state.snapshot) < 0) { list.unshift(state.snapshot); }
+    if (!list.length) {
+      // 该学期没有可用快照：给禁用占位项 + 友好说明，而不是空白下拉或别的学期的日期
+      sel.innerHTML = '<option value="" disabled selected>该学期暂无快照</option>';
+      sel.value = '';
+      return;
+    }
+    if (list.indexOf(state.snapshot) < 0) { state.snapshot = list[0]; }
     sel.innerHTML = list.map(function (d) {
       return '<option value="' + d + '">' + d + '</option>';
     }).join('');
@@ -1813,6 +1858,12 @@ html,body{
 
   function setSnapshot(date) {
     if (!date) { return; }
+    if (!isDateStr(date)) {
+      // 非法日期（空串 / 手写 2027 值 / 不存在的日期）不再拼成 NaN-NaN-NaN 去请求后端
+      showSnapshotNotice('快照日期 <b>' + escapeHtml(String(date)) +
+        '</b> 不是有效日期（应为 YYYY-MM-DD），已忽略。');
+      return;
+    }
     state.snapshot = date;
     var sel = $('snapshot-select');
     if (sel && sel.value !== date) { sel.value = date; }
@@ -1820,11 +1871,18 @@ html,body{
     renderCanteen(state.canteenMode || 'hour');
 
     var range = windowRange(date);
+    if (!range) { return; }
     var seq = ++state.reqSeq;
     apiGet('/canteens/trend?date_from=' + range.from + '&date_to=' + range.to + '&explain=0', 3500, function (data) {
-      if (seq !== state.reqSeq || !data) { return; }
-      var series = data.series || [];
-      if (!series.length) { return; }
+      if (seq !== state.reqSeq) { return; }
+      var series = (data && data.series) || [];
+      if (!series.length) {
+        // 该窗口返回空数组：保留学期内置快照 + 明确提示，不静默、不留空白图表
+        showSnapshotNotice('快照 <b>' + date + '</b> 的窗口（' + range.from + ' ~ ' + range.to +
+          '）内没有就餐记录，图表已保留该学期快照数据。');
+        return;
+      }
+      if (state.snapshotNotice) { showSnapshotNotice(''); }
       state.window = {
         from: range.from,
         to: range.to,

@@ -75,6 +75,11 @@ def _date(required=False):
     return _spec("date", required=required)
 
 
+def _semester(required=False):
+    """学期字段：形状固定的 ``YYYY-YYYY-N``（见 :func:`check_semester`）。"""
+    return _spec("semester", required=required)
+
+
 #: 各意图的参数白名单：字段名 → 规格。key 用小写，模型返回的 ``Weekday`` 也能被接受。
 SCHEMAS = {
     # 场景一：AI 智能找教室
@@ -91,7 +96,7 @@ SCHEMAS = {
         "has_computer": _bool(),
         "room_type": _enum(ROOM_TYPES),
         "building": _text(50),
-        "semester": _text(30),
+        "semester": _semester(),
         "date": _date(),
         "date_text": _text(30),
         "date_range_text": _text(30),
@@ -174,6 +179,10 @@ ALIASES = {
     # 相对日期原文（模型只抄原文，日期由 Python 解析）
     "date_expr": "date_text",
     "time_text": "date_text",
+    # 学期：模型常见的几种写法都收敛到 semester（规范形状由 check_semester 负责）
+    "term": "semester",
+    "term_name": "semester",
+    "semester_name": "semester",
 }
 
 #: 意图专属别名：同一个词在不同意图里含义不同，必须分开处理。
@@ -200,6 +209,10 @@ _TRUE_WORDS = ("true", "yes", "y", "1", "需要", "要", "有", "是", "必须")
 _FALSE_WORDS = ("false", "no", "n", "0", "不需要", "不要", "没有", "无", "否")
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: 学期规范形状：``2025-2026-1``（学年-学年-学期序号）。库里 schedules.semester 就是这个形状。
+_SEMESTER_RE = re.compile(r"^\d{4}-\d{4}-[12]$")
+#: 学期值里允许被剥掉的中文/英文后缀（模型很爱把「学期」两个字一起抄进来）。
+_SEMESTER_SUFFIXES = ("学期", "学年", "semester", "term")
 _NUMBER_RE = re.compile(r"^[+-]?\d+$")
 #: SQL 片段特征：注释、多语句、危险关键字、恒真条件。只用于拒绝，不用来改写。
 _SQL_RE = re.compile(
@@ -311,6 +324,41 @@ def check_date(value, field):
     return text
 
 
+def check_semester(value, field):
+    """学期校验：把各种写法收敛成 ``YYYY-YYYY-N``，形状不对直接 400。
+
+    只做形状与规范化（不查库）：**学期是否真的存在**由业务层（``queries``）
+    负责，那需要数据库；本模块保持「不连库、不拼 SQL」的定位。
+
+    规范化处理的是模型输出里最常见的两种噪声：两侧空白、把「学期」两个字一起抄进来
+    （``2025-2026-1学期``）。历史行为是原样当成学期名去查库，于是必然 404，
+    而错误信息只会说「学期 2025-2026-1学期 不存在」，用户和模型都难以自我纠正。
+    """
+    if not isinstance(value, str):
+        raise ValidationError("参数 {} 必须是字符串，实际为 {!r}".format(field, value), field=field)
+    text = " ".join(value.split())
+    if not text:
+        raise ValidationError("参数 {} 不能为空字符串".format(field), field=field)
+    # 反复剥后缀：``2025-2026-1学期`` / ``2025-2026-1 学期`` 都要收敛掉。
+    changed = True
+    while changed:
+        changed = False
+        lowered = text.lower()
+        for suffix in _SEMESTER_SUFFIXES:
+            if lowered.endswith(suffix) and len(text) > len(suffix):
+                text = text[: -len(suffix)].strip()
+                changed = True
+                break
+    if not _SEMESTER_RE.match(text):
+        raise ValidationError(
+            "参数 {} 必须是「学年-学年-学期序号」格式（例如 2025-2026-1），实际为 {!r}".format(
+                field, value
+            ),
+            field=field,
+        )
+    return reject_sql(text, field)
+
+
 def _coerce(kind, value, field, rules):
     """按字段规格校验单个值。"""
     if kind == "int":
@@ -319,6 +367,8 @@ def _coerce(kind, value, field, rules):
         return check_bool(value, field)
     if kind == "date":
         return check_date(value, field)
+    if kind == "semester":
+        return check_semester(value, field)
     if kind == "text":
         return check_text(value, field, rules.get("max_length", TEXT_MAX_LENGTH))
     if kind == "enum":
@@ -552,6 +602,8 @@ def _describe_rules(rules):
         return "true/false"
     if kind == "date":
         return "日期 YYYY-MM-DD"
+    if kind == "semester":
+        return "学期 YYYY-YYYY-N（如 2025-2026-1）"
     if kind == "enum":
         return "枚举 {}".format("/".join(rules["choices"]))
     return "字符串(<= {} 字)".format(rules.get("max_length", TEXT_MAX_LENGTH))

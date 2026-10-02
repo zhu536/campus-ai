@@ -54,7 +54,10 @@ GOLDEN_PATH = os.path.join(PROJECT_ROOT, "tests", "golden_questions.json")
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_TIMEOUT = 30.0
-DEFAULT_MAX_TOKENS = 800
+#: 单次回复的 token 上限。800 对「带推理的 OpenAI-compatible 网关」偏小：
+#: 推理 token 会先吃掉预算，导致 JSON 被截断（finish_reason=length）→ invalid_json
+#: → 整条解释静默降级。2048 是实测能稳定容纳「推理 + 完整 JSON」的量级。
+DEFAULT_MAX_TOKENS = 2048
 DEFAULT_TEMPERATURE = 0
 
 #: 降级意图：AI 不可用时返回它，让调用方（前端）能给出「稍后再试」而不是崩掉。
@@ -68,6 +71,8 @@ ERROR_NETWORK = "network_error"
 ERROR_HTTP_STATUS = "http_error"
 ERROR_INVALID_RESPONSE = "invalid_response"
 ERROR_INVALID_JSON = "invalid_json"
+#: 回复被 max_tokens 截断（finish_reason=length）且无法修复成完整 JSON。
+ERROR_TRUNCATED_RESPONSE = "truncated_response"
 ERROR_INVALID_INTENT = "invalid_intent"
 
 #: 放进错误消息里的响应片段上限，避免把模型/网关的长文本原样回显。
@@ -201,6 +206,11 @@ def extract_json_object(text):
         1. 去掉 ```json ... ``` 代码块围栏
         2. 直接 ``json.loads``
         3. 退化为「截取第一个 { 到最后一个 }」再解析
+        4. 仍然失败且结构明显被截断时，尝试 :func:`_repair_truncated_json` 抢救
+
+    第 4 步是「token 用尽把 JSON 截断」这一真实故障的兜底：抢救结果仍要能解析成
+    对象，且下游还会校验必需字段（例如解释器要求 ``summary``），因此不会把半截
+    内容当成有效结果。真正无法修复时才抛错，并区分「截断」与「不是 JSON」两种原因。
     """
     if not isinstance(text, str) or not text.strip():
         raise AIParserError("模型返回内容为空", code=ERROR_INVALID_JSON)
@@ -219,9 +229,115 @@ def extract_json_object(text):
             continue
         if isinstance(payload, dict):
             return payload
+
+    repaired = _repair_truncated_json(candidate)
+    if repaired is not None:
+        return repaired
+
+    # 只有「确实尝试输出过 JSON 对象」且结构没闭合时才算截断；
+    # ``[1,2,3]`` / 纯文本这类输入仍按 invalid_json 报（保持既有错误码语义）。
+    body = _slice_object(candidate) or candidate
+    if "{" in candidate and _looks_truncated(body):
+        raise AIParserError(
+            "模型返回的 JSON 被截断（max_tokens 不够）：{}".format(_excerpt(text)),
+            code=ERROR_TRUNCATED_RESPONSE,
+        )
     raise AIParserError(
         "模型返回的不是合法 JSON 对象：{}".format(_excerpt(text)), code=ERROR_INVALID_JSON
     )
+
+
+def _scan_json_state(text):
+    """扫描 JSON 文本的结构状态，返回 ``(未闭合的括号栈, 是否停在字符串里)``。
+
+    只看结构（引号/转义/括号），不解析内容，也不做任何语义修正。
+    """
+    stack = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]" and stack:
+            stack.pop()
+    return stack, in_string
+
+
+def _looks_truncated(text):
+    """是否像被截断：结尾停在未闭合的字符串里，或括号没有闭合。"""
+    stack, in_string = _scan_json_state(text)
+    return in_string or bool(stack)
+
+
+def _close_json(text):
+    """给截断的 JSON 补上缺失的收尾引号与右括号（不改动任何已有内容）。"""
+    stack, in_string = _scan_json_state(text)
+    fixed = text
+    if in_string:
+        fixed += '"'
+    for opener in reversed(stack):
+        fixed += "}" if opener == "{" else "]"
+    return fixed
+
+
+def _last_comma_outside_string(text):
+    """最后一个「不在字符串里」的逗号位置；没有则返回 -1。
+
+    截断点落在 ``"键": 值`` 中间时，需要退到这个逗号，丢掉整个不完整的条目。
+    """
+    in_string = False
+    escaped = False
+    last = -1
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == ",":
+            last = index
+    return last
+
+
+def _repair_truncated_json(text, max_trims=40):
+    """截断 JSON 的最后手段：补引号/括号，必要时从尾部丢弃不完整片段再试。
+
+    成功返回 ``dict``，失败返回 ``None``（调用方据此决定报截断还是非法 JSON）。
+    结构本来就完整却解析不了的输入直接返回 ``None`` —— 那不是截断问题。
+    """
+    if not isinstance(text, str) or "{" not in text:
+        return None
+
+    attempt = text[text.find("{") :]
+    for _ in range(max_trims):
+        if not _looks_truncated(attempt):
+            return None
+        try:
+            payload = json.loads(_close_json(attempt))
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            return payload
+        cut = _last_comma_outside_string(attempt)
+        if cut <= 0:
+            return None
+        attempt = attempt[:cut]
+    return None
 
 
 def _slice_object(text):
