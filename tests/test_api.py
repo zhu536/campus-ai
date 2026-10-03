@@ -329,17 +329,54 @@ def test_available_classrooms_unknown_semester_404(client):
     assert SEMESTER in payload["error"]["available"]
 
 
-def test_available_classrooms_weekday_requires_semester_when_multiple_exist(client):
-    """库里有多个学期时，只给 weekday 无法确定学期，必须报 400 并列出可选学期。
+def test_available_classrooms_weekday_without_semester_uses_latest(client, conn):
+    """只给 weekday 时自动兜底「库里最新学期」，不再 400；响应写明实际学期。
 
-    （单学期自动补齐的行为已被多学期数据取代：见 backend/queries.py 的
-    「len(available_semesters) == 1」分支。）
+    旧行为是「库里有多个学期时要求调用方必须传 semester」，但前端请求从不带
+    semester，导致招牌问句（周三下午找一个 8 人、有投影的空教室）永远 400。
+    现在改为按 ``queries.available_semesters`` 的首个（学期倒序 = 最新）兜底。
     """
     status, payload = call(client, "/api/classrooms/available", weekday=3, period_start=1, period_end=2)
+    assert status == 200
+    data = payload["data"]
+    assert data["query"]["semester"] == queries.available_semesters(conn)[0]
+    assert data["query"]["semester"] == SEMESTER_SPRING
+
+    # 兜底出来的学期必须真的参与冲突过滤（不是「不过滤、把全校教室都算空」）。
+    expected = {
+        row["room_id"]
+        for row in rooms_matching(
+            conn, weekday=3, period_start=1, period_end=2, semester=SEMESTER_SPRING,
+        )
+    }
+    returned = {room["room_id"] for room in data["rooms"]}
+    assert returned <= expected
+    assert data["total"] >= len(returned)
+
+
+def test_available_classrooms_weekday_without_any_schedule_data_is_400(tmp_path):
+    """库里完全没有排课数据时，不能兜底成「全部教室都空」，必须清晰报错。
+
+    兜底只对「有排课数据的学期」成立：没有学期可选时保持 400，
+    否则「空闲」结论会把全校教室都算成空的。
+    """
+    db_copy = tmp_path / "empty_schedules.db"
+    shutil.copyfile(REAL_DB, str(db_copy))
+    connection = sqlite3.connect(str(db_copy))
+    try:
+        connection.execute("DELETE FROM schedules")
+        connection.commit()
+    finally:
+        connection.close()
+
+    application = create_app(db_path=str(db_copy))
+    application.config.update(TESTING=True)
+    status, payload = call(application.test_client(), "/api/classrooms/available",
+                           weekday=3, period_start=1, period_end=2)
     assert status == 400
+    assert payload["error"]["code"] == "invalid_parameter"
     assert payload["error"]["field"] == "semester"
-    assert SEMESTER in payload["error"]["message"]
-    assert SEMESTER_SPRING in payload["error"]["message"]
+    assert "排课数据" in payload["error"]["message"]
 
 
 def test_available_classrooms_explicit_semester_filters_that_semester(client, conn):

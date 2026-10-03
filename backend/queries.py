@@ -103,20 +103,22 @@ def list_available_classrooms(conn, params):
     limit = params.get("limit") or DEFAULT_LIMIT
 
     # 学期：必须先确认它真的有排课数据，否则「空闲」结论会把全校教室都算成空的。
-    available_semesters = _distinct_values(conn, "semester", "schedules")
+    semesters = available_semesters(conn)
     if weekday is not None and semester is None:
-        if len(available_semesters) == 1:
-            semester = available_semesters[0]
+        # 前端请求从不带 semester（用户问句里也常常没有学期），因此这里按「库里最新的
+        # 学期」兜底，而不是要求调用方必须传：否则多学期数据下招牌问句必然 400。
+        # semesters 已按学期倒序（见 available_semesters），取首个即最新学期。
+        if semesters:
+            semester = semesters[0]
         else:
+            # 完全没有排课数据：此时无法判断「空闲」，必须报错而不是把全校教室都当成空的。
             raise ValidationError(
-                "指定 weekday 时必须同时提供 semester（可选：{}）".format(
-                    "/".join(available_semesters) or "无排课数据"
-                ),
+                "库里没有任何排课数据，无法判断教室是否空闲；请先导入排课数据后再指定 weekday",
                 field="semester",
             )
-    elif semester is not None and semester not in available_semesters:
+    elif semester is not None and semester not in semesters:
         raise NotFoundError(
-            "学期 {} 不存在".format(semester), field="semester", available=available_semesters
+            "学期 {} 不存在".format(semester), field="semester", available=semesters
         )
 
     where = (
