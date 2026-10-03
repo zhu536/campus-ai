@@ -2172,7 +2172,7 @@ html,body{
     if (apiOnline) {
       var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, 2600);
-      fetch(API_BASE + '/api/classrooms/search?explain=1&question=' + encodeURIComponent(text),
+      fetch(API_BASE + '/classrooms/search?explain=1&question=' + encodeURIComponent(text),
         ctrl ? { signal: ctrl.signal } : undefined)
         .then(function (r) { if (!r.ok) { throw new Error('bad status'); } return r.json(); })
         .then(function (json) {
