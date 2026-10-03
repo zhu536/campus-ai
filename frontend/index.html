@@ -360,6 +360,11 @@ html,body{
 .bubble .warn{color:var(--amber);font-family:var(--mono);font-weight:700;}
 .bubble .ok{color:var(--green);font-family:var(--mono);font-weight:700;}
 .bubble .src{margin-top:8px;padding-top:7px;border-top:1px dashed rgba(64,158,255,.24);font-size:11.5px;color:#6b87a8;font-family:var(--mono);letter-spacing:.4px;}
+.bubble .offline-tag{
+  display:inline-block;margin-left:7px;padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:400;
+  letter-spacing:.6px;color:#ffd08a;border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.13);
+  font-family:var(--font);vertical-align:1px;
+}
 .typing{display:flex;gap:5px;align-items:center;padding:13px 15px;}
 .typing i{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:blink 1.2s infinite;}
 .typing i:nth-child(2){animation-delay:.18s}.typing i:nth-child(3){animation-delay:.36s}
@@ -1975,51 +1980,90 @@ html,body{
   /* ------------------------- 10. AI 智能助手（本地知识库 + 可选后端） ------------------------- */
   var apiOnline = false;   // 与 state.apiOnline 同步；接口基址见文件顶部 API_BASE
 
+  //: 离线兜底回答的统一来源署名（在线时由 fallbackAnswer() 改写为"离线示例"）。
+  var OFFLINE_SRC = '数据源：页面内置离线快照（未连接后端）';
+
+  //: 数据是否来自后端实时接口。在线时快速按钮会走 /api/classrooms/search 并只做展示，
+  //: 本数组仅在「接口不可用」或「后端识别为其它意图」时作为回退答案使用，由 fallbackAnswer() 标注来源。
+
+  //: 统一给回退答案补一句数据来源说明，避免内置快照被误当成实时查询结果。
+  //: 情况一：后端不可用 → 明确写"未连接后端"；
+  //: 情况二：后端在线但这条回答没走后端实时接口 → 写"非后端实时结果"。
+  //: 两种情况都必须让用户看出这不是实时查询数据；offline 标记供 answerHtml 渲染可见徽标。
+  function fallbackAnswer(a) {
+    if (a && typeof a === 'object') {
+      a.offline = true;
+      a.src = (a.src || OFFLINE_SRC) + (apiOnline
+        ? ' · 离线示例数据（非后端实时结果）'
+        : ' · 离线示例数据 · 未连接后端');
+    }
+    return a;
+  }
+
+  //: 匹配顺序很重要：越具体的主题排在越前面，但顺序只是最后的兜底。
+  //: 历史顺序把 match:['教室'] 放在 match:['利用率'] 之前，而「教室利用率」同时含有
+  //: 这两个关键词，导致点「教室利用率」按钮永远落到"找教室"分支。现在改为：
+  //: 1) 每条给出稳定的 key（ask() 用它判断该不该走后端找教室接口）；
+  //: 2) 由 pickKnowledge() 按「最长命中关键词 + 命中关键词个数」打分，不再取首个命中。
+  //: 答案里的数值一律引用前端 DATA 快照，不写死具体推荐教室 / 薪资数字。
   var KNOWLEDGE = [
     {
-      match: ['教室', '空教室', '找教室', '自习'],
+      key: 'room_utilization',
+      match: ['利用率', '教室使用', '排课', '教学楼'],
       reply: function () {
         var term = termData();
-        var rooms = DATA.counts.classrooms;
-        var free = (term.slotFree === undefined ? '--' : term.slotFree);
+        var rows = (term.buildings || []).slice().sort(function (a, b) { return b.util - a.util; });
+        var tight = rows.slice(0, 2).map(function (r) { return r.name + ' ' + r.util + '%'; });
+        var loose = rows.slice(-2).reverse().map(function (r) { return r.name + ' ' + r.util + '%'; });
+        var totalPeriods = rows.reduce(function (a, r) { return a + r.periods; }, 0);
+        //: 与 DATA.buildings 里 util 的口径保持一致：占用节次 / (教室数 × 每周节位数)
+        var rooms = DATA.counts.classrooms || 50;
+        var periodsPerRoom = 50;
+        var totalSlots = rooms * periodsPerRoom;
         return {
-          title: 'INTENT · ROOM_SEARCH · ' + (term.label || ''),
-          body: '已按「周三下午 + 8 人 + 有投影」解析参数并查询空闲教室（' + (state.semester || '') + '）：',
+          title: 'INTENT · ROOM_UTILIZATION · ' + (term.label || ''),
+          body: '按 ' + (term.label || '') + ' 楼栋排课快照统计（' + rooms + ' 间教室 × 每周 ' + periodsPerRoom + ' 节位 = ' + totalSlots + ' 节位）：',
           list: [
-            '候选教室 <span class="hl">' + rooms + '</span> 间，当前时段空闲 <span class="ok">' + free + '</span> 间',
-            '推荐：<span class="hl">E202</span>（综合楼 2F · 60 人 · 投影 + 电脑 · 机房）',
-            '备选：<span class="hl">A402</span>（第一教学楼 4F · 100 人 · 投影）',
-            '筛选口径：容量刚好够用优先 → 容量升序 → 楼层升序'
+            '全校容量利用率 <span class="hl">' + (totalPeriods / totalSlots * 100).toFixed(1) + '%</span>（' + totalPeriods + ' 节 / ' + totalSlots + ' 节位）',
+            '最紧张：<span class="warn">' + (tight.join('、') || '暂无') + '</span>',
+            '最宽松：<span class="ok">' + (loose.join('、') || '暂无') + '</span>',
+            '当前时段（' + (term.weekdayName || '') + '）占用 <span class="warn">' + (term.slotOccupied || 0) + '</span> 间 · 空闲 <span class="ok">' + (term.slotFree || 0) + '</span> 间'
           ],
-          tail: '建议提前 1 个节次预约；数据随顶部「学期」下拉切换。',
-          src: '数据源：schedules / classrooms · /api/classrooms/available'
+          tail: '建议把部分理论课迁往实验楼与综合楼，缓解前三个教学楼压力。',
+          src: '数据源：前端内置快照 DATA.semesters[学期].buildings / weekdayName'
         };
       }
     },
     {
-      match: ['食堂', '拥挤', '排队', '等待', '人流', '吃饭', '午餐', '晚餐'],
+      key: 'job_market',
+      match: ['岗位', '薪资', '行业', '就业', '招聘'],
       reply: function () {
-        var term = termData();
-        var hours = (term.hours && term.hours.length) ? term.hours : DATA.hours;
-        var peak = 0, peakHour = 12, waitSum = 0;
-        hours.forEach(function (h) { if (h[1] > peak) { peak = h[1]; peakHour = h[0]; } waitSum += h[2]; });
-        var avgWait = (waitSum / Math.max(1, hours.length)).toFixed(2);
-        var fc = (DATA.forecast || [])[0];
+        // 全部改为引用前端已有的真实快照，不再写死具体数值：
+        // 岗位总数取 DATA.counts.jobs，薪资区间与技能需求取当前专业的 DATA.majors[major]。
+        var m = state.majorData || snapshotSkillGap(state.major);
+        var s = m.summary || {};
+        var skills = (m.skills || []).slice().sort(function (a, b) { return b.jobs - a.jobs; });
+        var topSkills = skills.slice(0, 3).map(function (x) { return x.name + ' ' + x.jobs + ' 岗'; });
+        var salary = (s.salaryMin && s.salaryMax)
+          ? Math.round(s.salaryMin) + ' ~ ' + Math.round(s.salaryMax) + ' 元'
+          : '暂无样本';
         return {
-          title: 'INTENT · CANTEEN_ANALYSIS · ' + (term.label || ''),
-          body: '基于 ' + (DATA.counts.mealRecords || 0) + ' 条就餐记录（' + (term.termStart || '') + ' ~ ' + (term.termEnd || '') + '）统计与预测：',
+          title: 'INTENT · JOB_MARKET · ' + (m.name || ''),
+          body: '共 ' + (DATA.counts.jobs || 0) + ' 个在招岗位样本 · 技能需求 ' +
+            (DATA.counts.jobSkills || 0) + ' 条 · 覆盖 ' + (DATA.counts.skills || 0) + ' 项技能：',
           list: [
-            '全时段平均等待 <span class="warn">' + avgWait + ' 分钟</span>（5 个食堂合计）',
-            '高峰区间 <span class="hl">11:00-13:00</span>，峰值 <span class="hl">' + peakHour + ':00 · ' + Math.round(peak) + ' 人/小时</span>',
-            '该学期累计客流 <span class="hl">' + ((term.canteenPeople || 0) / 10000).toFixed(1) + ' 万人次</span>（' + (term.days || 0) + ' 天）',
-            (fc ? '未来午餐预测：<span class="ok">' + fc.total + ' 人</span>（' + fc.date + '）' : '未来午餐预测：暂无')
+            '专业「' + (m.name || '') + '」相关岗位 <span class="hl">' + (s.jobs || 0) + '</span> 个，覆盖 ' + (s.industries || 0) + ' 个行业',
+            '技能需求最高：<span class="hl">' + (topSkills.join(' > ') || '暂无') + '</span>',
+            '平均薪资区间 <span class="ok">' + salary + '</span>（按该专业岗位样本统计）',
+            '岗位技能缺口 <span class="warn">' + (s.missing || 0) + '</span> 项 / 岗位要求 ' + (s.required || 0) + ' 项'
           ],
-          tail: '建议 11:20 前或 12:40 后前往，预计等待可降至 2 分钟以内。',
-          src: '数据源：meal_records · /api/canteens/peak | /api/canteens/trend'
+          tail: '可用「产教技能分析」面板切换专业对比不同方向的岗位需求。',
+          src: '数据源：前端内置快照 DATA.counts / DATA.majors[专业].summary · 在线时来自 /api/industry/gap'
         };
       }
     },
     {
+      key: 'skill_gap',
       match: ['技能', '缺口', '产教', '匹配', '专业', '课程'],
       reply: function () {
         var m = state.majorData || snapshotSkillGap(state.major);
@@ -2039,50 +2083,95 @@ html,body{
             '高需求已覆盖：' + (coveredTop.join('、') || '暂无')
           ],
           tail: '数据随「产教技能分析」面板里的专业下拉实时联动，可切换 8 个专业对比。',
-          src: '数据源：courses / course_skills / job_skills · /api/industry/gap?major=' + encodeURIComponent(m.name)
+          src: '数据源：前端内置快照 DATA.majors[专业] · 在线时来自 /api/industry/gap?major=' + encodeURIComponent(m.name)
         };
       }
     },
     {
-      match: ['利用率', '教室使用', '排课', '教学楼'],
+      key: 'canteen',
+      match: ['食堂', '拥挤', '排队', '等待', '人流', '吃饭', '午餐', '晚餐'],
       reply: function () {
         var term = termData();
-        var rows = (term.buildings || []).slice().sort(function (a, b) { return b.util - a.util; });
-        var tight = rows.slice(0, 2).map(function (r) { return r.name + ' ' + r.util + '%'; });
-        var loose = rows.slice(-2).reverse().map(function (r) { return r.name + ' ' + r.util + '%'; });
-        var totalPeriods = rows.reduce(function (a, r) { return a + r.periods; }, 0);
+        var hours = (term.hours && term.hours.length) ? term.hours : DATA.hours;
+        var peak = 0, peakHour = 12, waitSum = 0;
+        hours.forEach(function (h) { if (h[1] > peak) { peak = h[1]; peakHour = h[0]; } waitSum += h[2]; });
+        var avgWait = (waitSum / Math.max(1, hours.length)).toFixed(2);
+        var fc = (DATA.forecast || [])[0];
         return {
-          title: 'INTENT · ROOM_UTILIZATION · ' + (term.label || ''),
-          body: (state.semester || '') + ' 共 ' + (term.lessons || 0) + ' 条排课（50 间教室 × 周一至周五）统计：',
+          title: 'INTENT · CANTEEN_ANALYSIS · ' + (term.label || ''),
+          body: '基于 ' + (DATA.counts.mealRecords || 0) + ' 条就餐记录（' + (term.termStart || '') + ' ~ ' + (term.termEnd || '') + '）统计与预测：',
           list: [
-            '全校容量利用率 <span class="hl">' + (totalPeriods / (50 * 50) * 100).toFixed(1) + '%</span>（' + totalPeriods + ' 节 / 2500 节位）',
-            '最紧张：<span class="warn">' + tight.join('、') + '</span>',
-            '最宽松：<span class="ok">' + loose.join('、') + '</span>',
-            (term.weekdayName || '') + '课程最多（' + (term.lessons || 0) + ' 节），当前时段占用 ' + (term.slotOccupied || 0) + ' 间教室'
+            '全时段平均等待 <span class="warn">' + avgWait + ' 分钟</span>（5 个食堂合计）',
+            '高峰区间 <span class="hl">11:00-13:00</span>，峰值 <span class="hl">' + peakHour + ':00 · ' + Math.round(peak) + ' 人/小时</span>',
+            '该学期累计客流 <span class="hl">' + ((term.canteenPeople || 0) / 10000).toFixed(1) + ' 万人次</span>（' + (term.days || 0) + ' 天）',
+            (fc ? '未来午餐预测：<span class="ok">' + fc.total + ' 人</span>（' + fc.date + '）' : '未来午餐预测：暂无')
           ],
-          tail: '建议把部分理论课迁往实验楼与综合楼，缓解前三个教学楼压力。',
-          src: '数据源：schedules / classrooms · /api/classrooms/available'
+          tail: '建议 11:20 前或 12:40 后前往，预计等待可降至 2 分钟以内。',
+          src: '数据源：前端内置快照 DATA.semesters[学期].hours / DATA.forecast · 在线时来自 /api/canteens/*'
         };
       }
     },
     {
-      match: ['岗位', '薪资', '行业', '就业', '招聘'],
+      key: 'room_search',
+      match: ['教室', '空教室', '找教室', '自习'],
       reply: function () {
+        var term = termData();
+        var buildings = (term.buildings || []).slice().sort(function (a, b) { return b.util - a.util; });
+        var tight = buildings.slice(0, 2).map(function (b) { return b.name + '（占用率 ' + b.util + '%）'; });
+        var loose = buildings.slice(-2).reverse().map(function (b) { return b.name + '（占用率 ' + b.util + '%）'; });
         return {
-          title: 'INTENT · JOB_MARKET',
-          body: '100 个在招岗位样本（20 家企业 · 8 大行业 · 10 个城市）概览：',
+          title: 'INTENT · ROOM_SEARCH · ' + (term.label || ''),
+          body: '离线快照只统计到「楼栋」粒度（具体教室号需连接后端接口）：' + (state.semester || '') + ' 教室占用概况：',
           list: [
-            '技能需求条目 <span class="hl">400</span> 条，覆盖 <span class="hl">30</span> 项技能',
-            '需求量最高：<span class="hl">Python 47 岗</span> > Linux 31 岗 > MySQL 27 岗',
-            '平均薪资区间 <span class="ok">9780 ~ 14725 元</span>',
-            '岗位最多：软件开发 25 个，平均 10760 ~ 15320 元'
+            '全学期教室 <span class="hl">' + DATA.counts.classrooms + '</span> 间 · 当前时段占用 <span class="warn">' + (term.slotOccupied || 0) + '</span> 间 · 空闲 <span class="ok">' + (term.slotFree || 0) + '</span> 间',
+            '当前时段最空闲楼栋：' + (loose.join('、') || '暂无'),
+            '当前时段最紧张楼栋：' + (tight.join('、') || '暂无'),
+            '人数 / 投影等条件的校验与筛选全部由 Python 完成，AI 只负责解释结果'
           ],
-          tail: '技能需求与课程结构可对齐：数据处理类技能权重最高。',
-          src: '数据源：jobs / job_skills / skills · /api/industry/skills'
+          tail: '连接后端后这个按钮会调用 /api/classrooms/search 返回具体候选教室；离线时展示楼栋级快照。',
+          src: '数据源：前端内置快照 DATA.semesters[学期].buildings / DATA.counts.classrooms · 在线时来自 /api/classrooms/search'
         };
       }
     }
   ];
+
+  /**
+   * 在 KNOWLEDGE 中挑选命中最具体的那一条。
+   *
+   * 不能简单地「首个命中即返回」：像「教室利用率」同时含有 '教室' 与 '利用率'，
+   * 若按数组顺序取首个命中，会落到更泛化的「找教室」分支上。
+   *
+   * 打分规则（两级）：
+   *   1) 最长命中关键词更长者优先（'利用率' 胜过 '教室'）；
+   *   2) 长度相同时，命中关键词更多者优先（同一句里命中 2 个关键词比只命中 1 个更具体）。
+   *
+   * 第 2 级是必要的：「计算机科学与技术专业和岗位技能还差哪些？」里
+   * '岗位'(岗位条目) 与 '技能'/'专业'(技能条目) 都是 2 个字，
+   * 只看长度会退化成靠数组顺序决定；按命中个数比较，技能条目命中 2 个而胜出。
+   */
+  function pickKnowledge(question) {
+    var q = String(question || '').toLowerCase();
+    var best = null, bestLen = 0, bestHits = 0;
+    for (var i = 0; i < KNOWLEDGE.length; i++) {
+      var item = KNOWLEDGE[i];
+      var keys = item.match || [];
+      var itemLen = 0, hits = 0;
+      for (var j = 0; j < keys.length; j++) {
+        var k = keys[j];
+        if (!k) { continue; }
+        if (question.indexOf(k) < 0 && q.indexOf(k) < 0) { continue; }
+        hits++;
+        if (k.length > itemLen) { itemLen = k.length; }
+      }
+      if (itemLen === 0) { continue; }
+      if (itemLen > bestLen || (itemLen === bestLen && hits > bestHits)) {
+        bestLen = itemLen;
+        bestHits = hits;
+        best = item;
+      }
+    }
+    return best;
+  }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -2118,35 +2207,38 @@ html,body{
   }
 
   function localAnswer(question) {
-    var q = question.toLowerCase();
-    for (var i = 0; i < KNOWLEDGE.length; i++) {
-      var item = KNOWLEDGE[i];
-      for (var j = 0; j < item.match.length; j++) {
-        if (question.indexOf(item.match[j]) >= 0 || q.indexOf(item.match[j]) >= 0) {
-          return item.reply();
-        }
-      }
+    var hit = pickKnowledge(question);
+    if (hit) {
+      return fallbackAnswer(hit.reply());
     }
     var term = termData();
     var gap = state.majorData || snapshotSkillGap(state.major);
-    return {
+    var major = gap.name || DATA.majorsDefault || '';
+    return fallbackAnswer({
       title: 'INTENT · GENERAL',
       body: '我可以回答教室、食堂、产教技能与岗位数据相关问题。当前展示 ' + (state.semester || '') +
         '（' + (term.label || '') + '）：',
       list: [
         '今日课程 <span class="hl">' + (term.lessons || 0) + '</span> 节 · 当前时段空闲教室 <span class="hl">' + (term.slotFree || 0) + '</span> 间',
-        '食堂 <span class="hl">5</span> 个点位 · 该学期累计客流 <span class="hl">' +
+        '食堂 <span class="hl">' + (DATA.counts.canteens || 0) + '</span> 个点位 · 该学期累计客流 <span class="hl">' +
           ((term.canteenPeople || 0) / 10000).toFixed(1) + '</span> 万人次',
-        '岗位技能需求 <span class="hl">400</span> 条 · ' + gap.name + ' 缺口 <span class="warn">' +
+        '岗位技能需求 <span class="hl">' + (DATA.counts.jobSkills || 0) + '</span> 条 · ' + major + ' 缺口 <span class="warn">' +
           ((gap.summary || {}).missing || '--') + '</span> 项'
       ],
       tail: '试试问「周三下午找一个 8 人有投影的空教室」或「哪个食堂最拥挤」。',
-      src: '数据源：CampusAI 数据中枢（SQLite + Python 统计）· 学期 ' + (state.semester || '')
-    };
+      src: '数据源：页面内置离线快照 · 学期 ' + (state.semester || '')
+    });
   }
 
   function answerHtml(a) {
-    var html = '<div class="ttl">' + escapeHtml(a.title) + '</div>' + escapeHtml(a.body);
+    //: data-origin 标记这条回答的数据来源：live = 后端实时接口，offline = 内置离线快照。
+    //: 便于人工核对与自动化检查，避免离线示例被误读成实时结果；
+    //: offline 时再在标题行渲染一个可见的「离线示例」徽标，评委一眼能看出不是实时数据。
+    var origin = a && a.live ? 'live' : 'offline';
+    var tag = (a && a.offline)
+      ? '<span class="offline-tag" title="本条回答来自页面内置离线快照，不是后端实时查询结果">离线示例</span>'
+      : '';
+    var html = '<div class="ttl" data-origin="' + origin + '">' + escapeHtml(a.title) + tag + '</div>' + escapeHtml(a.body);
     if (a.list && a.list.length) {
       html += '<ul>' + a.list.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>';
     }
@@ -2162,14 +2254,21 @@ html,body{
     $('ask').value = '';
     var typing = addTyping();
 
-    // 优先尝试后端接口（失败则静默使用本地知识库，保证录屏不中断）
+    // 回答统一延迟渲染（保留打字动画，保证录屏节奏）
     var done = function (answer) {
       setTimeout(function () {
         typing.remove();
         addMsg('ai', answerHtml(answer));
       }, 460 + Math.random() * 320);
     };
-    if (apiOnline) {
+
+    //: 后端 /api/classrooms/search 只负责「找教室」（见 backend/routes.py 的接口说明）。
+    //: 若问题在离线知识库里已明确属于其它主题（食堂 / 技能缺口 / 岗位 / 利用率），
+    //: 就不再请求这个接口：既省掉一次注定失败的往返，也避免后端把「教室利用率」
+    //: 这类问题误判成 room_search 时，快捷按钮答成找教室。未命中任何主题时仍交给后端。
+    var localHit = pickKnowledge(text);
+    var useBackend = apiOnline && (!localHit || localHit.key === 'room_search');
+    if (useBackend) {
       var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, 2600);
       fetch(API_BASE + '/classrooms/search?explain=1&question=' + encodeURIComponent(text),
@@ -2183,6 +2282,7 @@ html,body{
             return r.room_name + '（' + r.building + ' ' + r.floor + 'F · ' + r.capacity + ' 人）';
           });
           done({
+            live: true,
             title: 'INTENT · ' + String(d.intent || 'room_search').toUpperCase(),
             body: '后端实时查询结果（AI 只做解释）：',
             list: [
