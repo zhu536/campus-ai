@@ -91,14 +91,14 @@ Harness，帮我把前端 AI 助手的问题修一下，这是我自己实测发
 
 ### 5. 真实验证结果（我的浏览器实测，非只看报告）
 
-- pytest（.venv）：**598 passed in 8.43s**（报告 598 passed，一致）
+- pytest（.venv）：**598 passed in 8.87s**（报告 598 passed，一致）
 - 找教室「周三下午帮我找一个8人、有投影的空教室」→ **命中 12 间**，推荐 D301 / D201 / B103，回答标注「实时接口: GET /api/classrooms/search」，不再是离线示例
 - 「帮我推荐股票」→ **「这个问题我不会，我只能回答教室、食堂、产教技能相关的问题。」**（INTENT · OUT_OF_SCOPE）
 - 快捷按钮「食堂拥挤预测」→ 实时数据：一食堂最挤（拥挤度 51% · 平均等待 8.4 分钟），未来午餐预测 3951 人，标注「实时接口: GET /api/canteens/stats + /api/canteens/forecast」
 - 网络面板：/api/ 请求被中断数 = 0（旧代码此处必为 ERR_ABORTED）
 
 - 找教室实时回答（命中 12 间，推荐 D301/D201/B103，标注实时接口）→ ![找教室实时回答](./images/day16-room-search-live.png)
-- 食堂拥挤预测实时数据（一食堂最挤：拥挤度 51% · 平均等待 8.4 分钟，午餐预测 3951 人）→ ![食堂拥挤预测实时数据](./images/day16-canteen-live.png)
+- 食堂拥挤预测实时数据（一食堂最挤：拥挤度 51% · 平均等待 5.46 分钟，午餐预测 3951 人）→ ![食堂拥挤预测实时数据](./images/day16-canteen-live.png)
 - 无关问题明确拒答（INTENT · OUT_OF_SCOPE）→ ![无关问题拒答](./images/day16-out-of-scope.png)
 
 ---
@@ -213,7 +213,7 @@ Harness，还有个 UI 问题要你修。我截图看了大屏，食堂人流趋
 7. 意图判定是启发式关键词打分，生僻问法可能串主题（既有限制，未扩大）。
 8. 离线时每次提问会多一次 /meta/semesters 轻探（约 0.6s），换来后端中途恢复后不用刷新页面就能转回在线。
 
-## 8. 验证截图清单（均已在 images/ 目录，GitHub 可直接渲染）
+## 8. 验证截图清单（均已在 images/ 目录）
 
 | 文件名（docs/ai-collaboration/images/） | 内容 | 用途 |
 |---|---|---|
@@ -223,7 +223,7 @@ Harness，还有个 UI 问题要你修。我截图看了大屏，食堂人流趋
 | `day16-readability-after.png` | 食堂人流趋势图左上角标题/副标题清晰画面 | 会话 2 验收证据 |
 | `day16-pytest-passed.png` | 终端 pytest 598 passed | 两轮通用 |
 
-- 终端 pytest 实拍（598 passed in 8.48s / 8.25s）→ ![终端 pytest 通过](./images/day16-pytest-passed.png)
+- 终端 pytest 实拍（598 passed in 8.87s）→ ![终端 pytest 通过](./images/day16-pytest-passed.png)
 
 > 配图说明：正文以上面的文字与代码块为准，截图只作辅助证据（README 规范）。
 > 截图前已启动后端（127.0.0.1:5000），页面为真实浏览器渲染；pytest 在项目 .venv 环境运行。
