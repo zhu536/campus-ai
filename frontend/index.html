@@ -29,7 +29,8 @@
   --rose:#fb7185;
   --text:#e8f2ff;
   --text-dim:#8fa6c4;
-  --text-faint:#5f7899;
+  /* 原来的 #5f7899 在深色底上对比度太低（投影上几乎看不见），统一提到和 --text-dim 同色 */
+  --text-faint:#8fa6c4;
   --font:"HarmonyOS Sans SC","Microsoft YaHei","PingFang SC","Segoe UI",-apple-system,sans-serif;
   --mono:"JetBrains Mono","Cascadia Mono","Consolas",monospace;
 }
@@ -195,7 +196,8 @@ html,body{
 }
 .panel-head .bar{width:4px;height:22px;border-radius:2px;background:linear-gradient(180deg,var(--cyan),var(--blue));box-shadow:0 0 12px rgba(34,211,238,.7);}
 .panel-head h2{font-size:19px;font-weight:700;letter-spacing:2px;color:#e2f1ff;}
-.panel-head .en{font-size:11px;font-family:var(--mono);letter-spacing:1.4px;color:#4d7099;text-transform:uppercase;padding-top:3px;}
+/* 图表副标题（面板标题右侧的英文）：11px/#4d7099 太暗太小，提到 13px/#a8c1e0 */
+.panel-head .en{font-size:13px;font-family:var(--mono);letter-spacing:1.4px;color:#a8c1e0;text-transform:uppercase;padding-top:3px;}
 .panel-head .tools{margin-left:auto;display:flex;align-items:center;gap:8px;}
 #panel-skill .panel-head .en{display:none;}
 #panel-skill .panel-head .field{height:32px;padding:0 8px 0 11px;}
@@ -274,7 +276,8 @@ html,body{
 .gap-strip .cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
   border-right:1px solid rgba(64,158,255,.12);}
 .gap-strip .cell:last-child{border-right:0}
-.gap-strip .k{font-size:11.5px;color:var(--text-faint);letter-spacing:1.4px}
+/* 底部统计条标签：11.5px + 最暗色 -> 13px + #8fa6c4 */
+.gap-strip .k{font-size:13px;color:var(--text-dim);letter-spacing:1.2px}
 .gap-strip .v{font-size:19px;font-weight:700;font-family:var(--mono);color:#dff1ff}
 .gap-strip .v.cy{color:var(--cyan)} .gap-strip .v.rose{color:var(--rose)} .gap-strip .v.green{color:var(--green)}
 
@@ -368,6 +371,8 @@ html,body{
 .typing{display:flex;gap:5px;align-items:center;padding:13px 15px;}
 .typing i{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:blink 1.2s infinite;}
 .typing i:nth-child(2){animation-delay:.18s}.typing i:nth-child(3){animation-delay:.36s}
+/* 在线请求的等待说明：含 AI 的接口要 4~5 秒，明确写出来，避免被误认为页面卡死 */
+.typing-hint{padding:0 15px 11px;font-size:11.5px;color:#7fa3c9;letter-spacing:.3px;}
 @keyframes blink{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}
 .quick{padding:8px 16px 10px;display:flex;flex-wrap:wrap;gap:7px;border-top:1px solid rgba(64,158,255,.14);}
 .quick button{
@@ -974,8 +979,10 @@ html,body{
 
   var THEME = {
     text: '#dbe9fb',
-    dim: '#8fa6c4',
-    faint: '#5f7899',
+    //: 图表说明性文字的统一色：标题 / 副标题 / 图例 / 坐标轴刻度 / 坐标轴名字。
+    //: 原来这里用 dim(#8fa6c4) 与 faint(#5f7899)，在深色底上对比度不够（投影上尤其看不清），
+    //: 统一提到 #a8c1e0 这一档亮度。
+    label: '#a8c1e0',
     axis: 'rgba(120,170,230,.30)',
     split: 'rgba(120,170,230,.10)',
     cyan: '#22d3ee',
@@ -1040,19 +1047,75 @@ html,body{
   }
 
   /* ------------------------- 1c. 接口调用与数据适配器 ------------------------- */
-  function apiGet(path, timeoutMs, cb) {
-    if (typeof fetch !== 'function') { cb(null); return; }
+
+  //: 后端数据接口的统一超时：``/classrooms/search`` 要调大模型做意图识别 + 结果解释，
+  //: 后端实测 4~5 秒；``/canteens/*?explain=1``、``/canteens/trend``、``/industry/*``
+  //: 与教室查询同属一条后端数据链路，一并给足余量。历史上找教室这一步只给了 2600ms，
+  //: 请求在后端返回前就被前端 abort，于是每次都被误判成「后端不可用」而走内置快照降级。
+  var AI_TIMEOUT_MS = 15000;
+
+  //: 纯读元信息/健康探测（``/meta/semesters``）：不吃 AI，必须很快返回，
+  //: 所以保持短超时，让页面在几秒内就能如实显示「已连接 / 离线快照」。
+  var PROBE_TIMEOUT_MS = 2500;
+
+  /** 与 apiGet 同样的超时 + AbortController 逻辑，但把失败原因也交给回调。
+   *
+   * ``cb(data, info)``：
+   *   - 命中：``data`` 为 ``json.data``，``info.ok === true``；
+   *   - 失败：``data`` 为 ``null``，``info`` 带 ``status`` 与后端错误 ``code``
+   *     （例如 400 ``unsupported_intent`` = 后端明确表示「这不是找教室的问题」），
+   *     或 ``timeout`` / ``network`` / ``no_fetch``。
+   * 这样 ``ask()`` 才能把「后端说这问题不归它管」和「真的连不上」区分开。
+   */
+  function apiGetEx(path, timeoutMs, cb) {
+    if (typeof fetch !== 'function') { cb(null, { ok: false, code: 'no_fetch' }); return; }
     var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, timeoutMs || 2500);
+    var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, timeoutMs || AI_TIMEOUT_MS);
     var opts = ctrl ? { signal: ctrl.signal } : undefined;
     fetch(API_BASE + path, opts)
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (json) {
-        clearTimeout(timer);
-        if (!json || json.status !== 'ok' || !json.data) { cb(null); return; }
-        cb(json.data);
+      .then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (json) {
+          return { ok: r.ok, status: r.status, json: json };
+        });
       })
-      .catch(function () { clearTimeout(timer); cb(null); });
+      .then(function (res) {
+        clearTimeout(timer);
+        var json = res.json;
+        var hit = !!(res.ok && json && json.status === 'ok' && json.data);
+        var err = (json && json.error) || {};
+        cb(hit ? json.data : null, {
+          ok: hit,
+          status: res.status,
+          code: hit ? '' : (err.code || (res.ok ? 'empty' : 'http_' + res.status)),
+          message: err.message || ''
+        });
+      })
+      .catch(function (e) {
+        clearTimeout(timer);
+        cb(null, { ok: false, code: (e && e.name === 'AbortError') ? 'timeout' : 'network' });
+      });
+  }
+
+  function apiGet(path, timeoutMs, cb) {
+    apiGetEx(path, timeoutMs, function (data) { cb(data); });
+  }
+
+  /** 并发请求多个只读接口，任意一个成功即算成功（一个回答需要多张报表时用）。
+   *
+   * ``cb(list)``：与 ``paths`` 等长，失败项为 ``null``；调用方按需组合，
+   * 全部为 ``null`` 即视为整体失败 → 回落内置快照。
+   */
+  function apiGetAll(paths, timeoutMs, cb) {
+    var list = new Array(paths.length);
+    var left = paths.length;
+    if (!left) { cb(list); return; }
+    paths.forEach(function (p, i) {
+      apiGetEx(p, timeoutMs, function (data) {
+        list[i] = data;
+        left--;
+        if (left === 0) { cb(list); }
+      });
+    });
   }
 
   function pad2(n) { return n < 10 ? '0' + n : String(n); }
@@ -1266,12 +1329,12 @@ html,body{
       }),
       legend: {
         show: true, right: 8, top: 0, itemWidth: 12, itemHeight: 8, itemGap: 16,
-        textStyle: { color: THEME.dim, fontSize: 12 },
+        textStyle: { color: THEME.label, fontSize: 13.5 },
         data: ['教室占用率', '课程节数']
       },
       xAxis: {
-        type: 'value', max: 100, name: '%', nameTextStyle: { color: THEME.faint, fontSize: 12 },
-        axisLabel: { color: THEME.dim, fontSize: 12, formatter: '{value}%' },
+        type: 'value', max: 100, name: '%', nameTextStyle: { color: THEME.label, fontSize: 14 },
+        axisLabel: { color: THEME.label, fontSize: 13.5, formatter: '{value}%' },
         axisLine: axisLine(), axisTick: { show: false },
         splitLine: { lineStyle: { color: THEME.split } }
       },
@@ -1313,7 +1376,7 @@ html,body{
           symbol: 'none', silent: true, z: 1,
           lineStyle: { width: 1.6, type: 'dashed', color: 'rgba(251,113,133,.72)' },
           label: {
-            show: true, position: 'end', color: 'rgba(251,113,133,.9)', fontSize: 11,
+            show: true, position: 'end', color: 'rgba(251,113,133,.95)', fontSize: 12.5,
             formatter: '配置上限 60%'
           }
         }
@@ -1336,20 +1399,21 @@ html,body{
 
     return {
       backgroundColor: 'transparent',
-      // top 留出图例+副标题的净空，右侧给竖排图例让位，避免图例压住柱子和轴文字
-      grid: { left: 66, right: 108, top: 58, bottom: 42 },
+      // 顶部留出三段互不重叠的横带：①标题(16px)+副标题(13px,两行) ②图例 ③坐标轴名字(14px)。
+      // 历史值 grid.top=58 / nameGap=16 会让「客流（人/小时）」「等待（分钟）」正好压到副标题那一行上（见修复前截图）。
+      grid: { left: 66, right: 108, top: 86, bottom: 44 },
       legend: {
         top: 6, right: 10, orient: 'vertical', align: 'left',
         itemWidth: 12, itemHeight: 8, itemGap: 10,
-        textStyle: { color: THEME.dim, fontSize: 12 },
+        textStyle: { color: THEME.label, fontSize: 13.5 },
         data: ['历史平均客流', '平均等待时长']
       },
       title: {
         show: true, left: 66, top: 8, textBaseline: 'top',
         text: (term.label ? term.label + ' · ' : '') + '逐小时平均客流',
         subtext: (term.termStart || '') + ' ~ ' + (term.termEnd || '') + ' · 全校 5 个食堂合计',
-        textStyle: { color: '#9fb8d4', fontSize: 12, fontWeight: 'normal' },
-        subtextStyle: { color: '#5f7899', fontSize: 11, fontFamily: 'monospace' }
+        textStyle: { color: '#dbe9fb', fontSize: 16, fontWeight: 'normal' },
+        subtextStyle: { color: '#a8c1e0', fontSize: 13 }
       },
       tooltip: baseTooltip({
         trigger: 'axis',
@@ -1367,23 +1431,23 @@ html,body{
       xAxis: {
         type: 'category', data: cats, boundaryGap: true,
         axisLabel: {
-          color: function (v, i) { return i === peakIdx ? THEME.amber : THEME.dim; },
-          fontSize: 12, interval: 0, formatter: function (v) { return v.replace(':00', '点'); }
+          color: function (v, i) { return i === peakIdx ? THEME.amber : THEME.label; },
+          fontSize: 13.5, interval: 0, formatter: function (v) { return v.replace(':00', '点'); }
         },
         axisLine: axisLine(), axisTick: { show: false }
       },
       yAxis: [
         {
-          type: 'value', name: '客流（人/小时）', nameGap: 16,
-          nameTextStyle: { color: THEME.faint, fontSize: 11, align: 'left' },
-          axisLabel: { color: THEME.dim, fontSize: 12, margin: 10 },
+          type: 'value', name: '客流（人/小时）', nameGap: 8,
+          nameTextStyle: { color: THEME.label, fontSize: 14, align: 'left' },
+          axisLabel: { color: THEME.label, fontSize: 13.5, margin: 10 },
           axisLine: axisLine(), axisTick: { show: false },
           splitLine: { lineStyle: { color: THEME.split } }
         },
         {
-          type: 'value', name: '等待（分钟）', nameGap: 16,
-          nameTextStyle: { color: THEME.faint, fontSize: 11, align: 'right' },
-          max: 10, axisLabel: { color: THEME.dim, fontSize: 12, margin: 10 },
+          type: 'value', name: '等待（分钟）', nameGap: 8,
+          nameTextStyle: { color: THEME.label, fontSize: 14, align: 'right' },
+          max: 10, axisLabel: { color: THEME.label, fontSize: 13.5, margin: 10 },
           axisLine: axisLine(), axisTick: { show: false }, splitLine: { show: false }
         }
       ],
@@ -1411,7 +1475,7 @@ html,body{
             silent: true, symbol: 'none',
             lineStyle: { color: 'rgba(139,92,246,.65)', type: 'dashed', width: 1.4 },
             label: {
-              color: 'rgba(196,181,253,.95)', fontSize: 11, position: 'insideStartTop',
+              color: 'rgba(196,181,253,.95)', fontSize: 12.5, position: 'insideStartTop',
               padding: [0, 0, 2, 4], formatter: '基准线 ' + baseline + ' 人'
             },
             data: [{ yAxis: baseline }]
@@ -1484,19 +1548,21 @@ html,body{
 
     return {
       backgroundColor: 'transparent',
-      grid: { left: 76, right: 34, top: 62, bottom: 42 },
+      // right 34 -> 64：最后一个「预测 07-18 周六」刻度原本会被画布右边缘截断（字号放大后更明显）；
+      // top 62 -> 86：与分时段图同理，给标题/副标题/轴名各留一条互不重叠的横带。
+      grid: { left: 76, right: 64, top: 86, bottom: 44 },
       legend: {
         top: 6, right: 10, orient: 'vertical', align: 'left',
         itemWidth: 12, itemHeight: 8, itemGap: 10,
-        textStyle: { color: THEME.dim, fontSize: 12 },
+        textStyle: { color: THEME.label, fontSize: 13.5 },
         data: ['周日均客流', '预测午餐客流']
       },
       title: {
         show: true, left: 76, top: 10, textBaseline: 'top',
         text: (w.term.label ? w.term.label + ' · ' : '') + '周日均客流与未来三天午餐预测',
         subtext: '窗口 ' + rangeText + fallbackText,
-        textStyle: { color: '#9fb8d4', fontSize: 12, fontWeight: 'normal' },
-        subtextStyle: { color: '#5f7899', fontSize: 11, fontFamily: 'monospace' }
+        textStyle: { color: '#dbe9fb', fontSize: 16, fontWeight: 'normal' },
+        subtextStyle: { color: '#a8c1e0', fontSize: 13 }
       },
       tooltip: baseTooltip({
         trigger: 'axis',
@@ -1513,12 +1579,14 @@ html,body{
       }),
       xAxis: {
         type: 'category', data: cats, boundaryGap: false,
-        axisLabel: { color: THEME.dim, fontSize: 12, interval: 0 },
+        axisLabel: { color: THEME.label, fontSize: 13.5, interval: 0 },
         axisLine: axisLine(), axisTick: { show: false }
       },
       yAxis: {
-        type: 'value', name: '人/天', nameTextStyle: { color: THEME.faint, fontSize: 11 },
-        min: 4000, axisLabel: { color: THEME.dim, fontSize: 12 },
+        type: 'value', name: '人/天', nameGap: 8,
+        // align:'left' 让轴名从轴的左侧起排，避开同样贴边的最高位刻度文字（如 9,000）
+        nameTextStyle: { color: THEME.label, fontSize: 14, align: 'left' },
+        min: 4000, axisLabel: { color: THEME.label, fontSize: 13.5 },
         axisLine: axisLine(), axisTick: { show: false },
         splitLine: { lineStyle: { color: THEME.split } }
       },
@@ -1543,7 +1611,7 @@ html,body{
             return {
               silent: true,
               itemStyle: { color: 'rgba(139,92,246,.10)' },
-              label: { color: 'rgba(196,181,253,.85)', fontSize: 11, position: 'insideTop', formatter: '国庆假期低谷' },
+              label: { color: 'rgba(196,181,253,.95)', fontSize: 12.5, position: 'insideTop', formatter: '国庆假期低谷' },
               data: [[{ xAxis: '第1周' }, { xAxis: '第2周' }]]
             };
           })()
@@ -1575,7 +1643,9 @@ html,body{
 
     return {
       backgroundColor: 'transparent',
-      grid: { left: 116, right: 118, top: 34, bottom: 12 },
+      // top 34 -> 40：图例放大到 13.5px 后需要多留一点净空，避免压到第一根柱子；
+      // bottom 12 -> 34：底部原本只有 12px，刻度文字（还有轴名「需求岗位数」）会被画布下边缘截掉。
+      grid: { left: 116, right: 118, top: 40, bottom: 34 },
       tooltip: baseTooltip({
         trigger: 'axis',
         axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(34,211,238,.08)' } },
@@ -1592,18 +1662,18 @@ html,body{
       }),
       legend: {
         top: 2, right: 8, itemWidth: 12, itemHeight: 8, itemGap: 14,
-        textStyle: { color: THEME.dim, fontSize: 12 },
+        textStyle: { color: THEME.label, fontSize: 13.5 },
         data: ['课程已覆盖', '技能缺口']
       },
       xAxis: {
-        type: 'value', name: '需求岗位数', nameTextStyle: { color: THEME.faint, fontSize: 11 },
-        axisLabel: { color: THEME.dim, fontSize: 12 },
+        type: 'value', name: '需求岗位数', nameTextStyle: { color: THEME.label, fontSize: 14 },
+        axisLabel: { color: THEME.label, fontSize: 13.5 },
         axisLine: axisLine(), axisTick: { show: false },
         splitLine: { lineStyle: { color: THEME.split } }
       },
       yAxis: {
         type: 'category', data: names,
-        axisLabel: { color: THEME.text, fontSize: 13, margin: 12 },
+        axisLabel: { color: THEME.text, fontSize: 14, margin: 12 },
         axisLine: axisLine(), axisTick: { show: false }
       },
       series: [
@@ -1714,7 +1784,7 @@ html,body{
     if (silent) { return; }
 
     var seq = ++state.reqSeq;
-    apiGet('/industry/gap?major=' + encodeURIComponent(name) + '&min_importance=1&top=20', 3000, function (data) {
+    apiGet('/industry/gap?major=' + encodeURIComponent(name) + '&min_importance=1&top=20', AI_TIMEOUT_MS, function (data) {
       if (seq !== state.reqSeq) { return; }        // 连点切换时丢弃过期响应
       if (!data || !data.summary) { return; }      // 保持快照，不报错
       applySkillGap(adaptSkillGap(data, name));
@@ -1878,7 +1948,7 @@ html,body{
     var range = windowRange(date);
     if (!range) { return; }
     var seq = ++state.reqSeq;
-    apiGet('/canteens/trend?date_from=' + range.from + '&date_to=' + range.to + '&explain=0', 3500, function (data) {
+    apiGet('/canteens/trend?date_from=' + range.from + '&date_to=' + range.to + '&explain=0', AI_TIMEOUT_MS, function (data) {
       if (seq !== state.reqSeq) { return; }
       var series = (data && data.series) || [];
       if (!series.length) {
@@ -2206,35 +2276,72 @@ html,body{
     return wrap;
   }
 
+  /** 在线请求期间在打字动画下方补一行说明。
+   *
+   * 含 AI 的接口要 4~5 秒（最长 15 秒），只有三个跳动的点会让用户以为页面卡死；
+   * 因此明确写出「正在调后端实时接口」，同时保留原有的加载动画。
+   */
+  function setTypingHint(wrap, text) {
+    if (!wrap || !text || typeof wrap.querySelector !== 'function') { return; }
+    var bubble = wrap.querySelector('.bubble');
+    if (!bubble) { return; }
+    bubble.innerHTML = '<div class="typing"><i></i><i></i><i></i></div>' +
+      '<div class="typing-hint">' + escapeHtml(text) + '</div>';
+  }
+
+  //: 在线请求的等待文案（见 setTypingHint）。
+  var LIVE_HINT = '正在调用后端实时接口（AI 意图识别 + 结果解释约 4~5 秒）…';
+
+  /** 与校园数据完全无关的问题：明确说「不会」，而不是回一段校园介绍（答非所问）。
+   *
+   * 这条回答不含任何数据（不是快照、也不是实时结果），所以 origin 记为 local，
+   * 不打「离线示例」徽标——避免把「能力范围说明」误标成离线数据。
+   */
+  function unsupportedAnswer() {
+    return {
+      local: true,
+      title: 'INTENT · OUT_OF_SCOPE',
+      body: '这个问题我不会，我只能回答教室、食堂、产教技能相关的问题。',
+      list: [
+        '教室：<span class="hl">周三下午帮我找一个 8 人、有投影的空教室</span>',
+        '食堂：<span class="hl">今天中午哪个食堂最拥挤？需要等多久？</span>',
+        '产教技能：<span class="hl">计算机科学与技术专业和岗位技能还差哪些？</span>'
+      ],
+      tail: '换一个校园数据类的问题吧。',
+      src: '能力范围：找教室 / 食堂拥挤分析与预测 / 岗位技能与专业课程匹配'
+    };
+  }
+
+  /** 离线（后端不可用）时，句子里是否还有校园场景线索。
+   *
+   * 用于把「离线时没命中具体主题、但明显在问校园场景」的问题（例如「找个空房间」）
+   * 兜底成楼栋级快照，同时把「股票 / 天气」这类完全无关的问题留给 unsupportedAnswer()。
+   */
+  function campusSceneQuestion(question) {
+    return /(校园|学校|教室|自习|空房|空位|座位|投影|电脑|机房|实验室|教学楼|楼栋|图书馆|宿舍|食堂|排课|课表|上课|人数|周[一二三四五六日天]|星期|今天|明天|后天|上午|下午|晚上|早上|节次)/.test(String(question || ''));
+  }
+
+  /** 离线兜底：命中知识库 → 对应内置快照；没命中 → 校园场景走找教室快照，否则明确拒答。 */
   function localAnswer(question) {
     var hit = pickKnowledge(question);
     if (hit) {
       return fallbackAnswer(hit.reply());
     }
-    var term = termData();
-    var gap = state.majorData || snapshotSkillGap(state.major);
-    var major = gap.name || DATA.majorsDefault || '';
-    return fallbackAnswer({
-      title: 'INTENT · GENERAL',
-      body: '我可以回答教室、食堂、产教技能与岗位数据相关问题。当前展示 ' + (state.semester || '') +
-        '（' + (term.label || '') + '）：',
-      list: [
-        '今日课程 <span class="hl">' + (term.lessons || 0) + '</span> 节 · 当前时段空闲教室 <span class="hl">' + (term.slotFree || 0) + '</span> 间',
-        '食堂 <span class="hl">' + (DATA.counts.canteens || 0) + '</span> 个点位 · 该学期累计客流 <span class="hl">' +
-          ((term.canteenPeople || 0) / 10000).toFixed(1) + '</span> 万人次',
-        '岗位技能需求 <span class="hl">' + (DATA.counts.jobSkills || 0) + '</span> 条 · ' + major + ' 缺口 <span class="warn">' +
-          ((gap.summary || {}).missing || '--') + '</span> 项'
-      ],
-      tail: '试试问「周三下午找一个 8 人有投影的空教室」或「哪个食堂最拥挤」。',
-      src: '数据源：页面内置离线快照 · 学期 ' + (state.semester || '')
-    });
+    if (campusSceneQuestion(question)) {
+      for (var i = 0; i < KNOWLEDGE.length; i++) {
+        if (KNOWLEDGE[i].key === 'room_search') { return fallbackAnswer(KNOWLEDGE[i].reply()); }
+      }
+    }
+    //: 与主题无关的问题不再回一段校园介绍（旧行为），改为明确说明能力范围。
+    return unsupportedAnswer();
   }
 
   function answerHtml(a) {
-    //: data-origin 标记这条回答的数据来源：live = 后端实时接口，offline = 内置离线快照。
+    //: data-origin 标记这条回答的数据来源：live = 后端实时接口，offline = 内置离线快照，
+    //: local = 不依赖数据的本地回答（能力范围说明等）。
     //: 便于人工核对与自动化检查，避免离线示例被误读成实时结果；
     //: offline 时再在标题行渲染一个可见的「离线示例」徽标，评委一眼能看出不是实时数据。
-    var origin = a && a.live ? 'live' : 'offline';
+    var origin = a && a.live ? 'live' : ((a && a.local) ? 'local' : 'offline');
     var tag = (a && a.offline)
       ? '<span class="offline-tag" title="本条回答来自页面内置离线快照，不是后端实时查询结果">离线示例</span>'
       : '';
@@ -2245,6 +2352,231 @@ html,body{
     if (a.tail) { html += '<div style="margin-top:4px;color:#a9c8ea">' + escapeHtml(a.tail) + '</div>'; }
     if (a.src) { html += '<div class="src">' + escapeHtml(a.src) + '</div>'; }
     return html;
+  }
+
+  /* ---------- 10b. 在线实时回答：接口字段 → 展示文案，不做业务计算 ---------- */
+
+  /** null / NaN 安全的数字展示。 */
+  function fmtNum(v) {
+    return (v === null || v === undefined || isNaN(Number(v))) ? '--' : String(v);
+  }
+
+  /** 当前快照窗口的日期区间查询串；日期不可用时不带日期，由后端按全量数据统计。 */
+  function windowQuery() {
+    var w = state.window || {};
+    if (isDateStr(w.from) && isDateStr(w.to)) {
+      return '&date_from=' + w.from + '&date_to=' + w.to;
+    }
+    return '';
+  }
+
+  /** 当前学期「有排课的那一天」的教室占用查询串（真实排课冲突由 Python 差集算出）。 */
+  function roomQuery() {
+    var term = termData();
+    var q = 'semester=' + encodeURIComponent(state.semester || '');
+    var weekday = Number(term.weekday);
+    if (weekday >= 1 && weekday <= 7) { q += '&weekday=' + weekday; }
+    return q + '&period_start=1&period_end=12&limit=100';
+  }
+
+  /** 问题里点名的专业（取最长命中，避免短名误伤）；没点名就用当前选中的专业。 */
+  function majorFromQuestion(question) {
+    var text = String(question || '');
+    var best = '';
+    Object.keys(DATA.majors || {}).forEach(function (n) {
+      if (text.indexOf(n) >= 0 && n.length > best.length) { best = n; }
+    });
+    return best || state.major;
+  }
+
+  /** 找教室：/api/classrooms/search 返回的候选教室 + 后端 AI 解释，只做展示。 */
+  function roomSearchAnswer(d) {
+    var rooms = (d.rooms || []).slice(0, 3).map(function (r) {
+      return r.room_name + '（' + r.building + ' ' + r.floor + 'F · ' + r.capacity + ' 人）';
+    });
+    return {
+      live: true,
+      title: 'INTENT · ' + String(d.intent || 'room_search').toUpperCase(),
+      body: '后端实时查询结果（AI 只做解释）：',
+      list: [
+        '命中教室 <span class="hl">' + (d.total || 0) + '</span> 间',
+        '空闲 <span class="ok">' + d.summary.available_count + '</span> 间 · 占用 ' + d.summary.occupied_count + ' 间'
+      ].concat(rooms.map(function (r) { return '推荐：<span class="hl">' + escapeHtml(r) + '</span>'; })),
+      tail: (d.explanation && d.explanation.text) ? String(d.explanation.text).slice(0, 120) : '参数校验、查询与计算全部由 Python 完成。',
+      src: '实时接口：GET /api/classrooms/search'
+    };
+  }
+
+  /** 找教室的在线请求。
+   *
+   * 后端这一步要调大模型做意图识别与结果解释（实测 4~5 秒），所以超时给到
+   * ``AI_TIMEOUT_MS``。历史上这里写死 2600ms，请求在后端返回前就被 abort，
+   * 每次都掉进 ``done(localAnswer(...))`` 的降级分支 → 用户永远看到「离线示例」。
+   */
+  function fetchRoomSearch(text, onLive, onUnsupported, onFail) {
+    apiGetEx('/classrooms/search?explain=1&question=' + encodeURIComponent(text), AI_TIMEOUT_MS, function (d, info) {
+      if (d && d.summary) { onLive(roomSearchAnswer(d)); return; }
+      //: 后端明确表示「这不是找教室的问题」（400 unsupported_intent / intent=unknown）：
+      //: 以前这里被 .catch 吞掉后回一段校园介绍，属于答非所问；现在明确拒答。
+      if (info && info.code === 'unsupported_intent') { onUnsupported(); return; }
+      onFail();
+    });
+  }
+
+  /** 食堂拥挤预测：/api/canteens/stats（拥挤度 / 等待时长）+ /api/canteens/forecast（预测 + AI 解释）。 */
+  function fetchCanteenLive(onLive, onFail) {
+    var win = windowQuery();
+    apiGetAll([
+      '/canteens/stats?time_slot=lunch&top_slots=3' + win,
+      '/canteens/forecast?time_slot=lunch&horizon_days=3&explain=1' + win
+    ], AI_TIMEOUT_MS, function (res) {
+      var stats = res[0], fc = res[1];
+      if (!stats && !fc) { onFail(); return; }
+      var list = [];
+      var s = (stats && stats.summary) || {};
+      if (stats) {
+        list.push('统计窗口 <span class="hl">' + (s.date_start || '--') + ' ~ ' + (s.date_end || '--') +
+          '</span> · 就餐记录 <span class="hl">' + (s.records || 0) + '</span> 条');
+        list.push('全时段平均等待 <span class="warn">' + fmtNum(s.avg_wait_minutes) + ' 分钟</span> · 客流合计 <span class="hl">' +
+          (s.people_total || 0) + '</span> 人次');
+        var rows = (stats.canteens || []).slice().sort(function (a, b) {
+          return (b.congestion || 0) - (a.congestion || 0);
+        });
+        var worst = rows[0];
+        if (worst) {
+          list.push('最拥挤：<span class="warn">' + escapeHtml(worst.canteen_name) + '</span>（拥挤度 ' +
+            Math.round((worst.congestion || 0) * 100) + '% · 平均等待 ' + fmtNum(worst.avg_wait_minutes) + ' 分钟' +
+            (worst.peak_hour ? ' · 高峰 ' + worst.peak_hour.hour + ':00' : '') + '）');
+        }
+        var lightest = rows.filter(function (x) { return x.avg_wait_minutes !== null && x.avg_wait_minutes !== undefined; }).pop();
+        if (lightest && lightest !== worst) {
+          list.push('等待最短：<span class="ok">' + escapeHtml(lightest.canteen_name) + '</span>（平均 ' +
+            fmtNum(lightest.avg_wait_minutes) + ' 分钟）');
+        }
+      }
+      var p = null;
+      var rep = fc && fc.forecast;   // /canteens/forecast 的报表嵌在 data.forecast 下（见 backend/forecast.analyze_canteen）
+      if (rep && rep.predictions && rep.predictions.length) { p = rep.predictions[0]; }
+      if (p) {
+        list.push('未来午餐预测：<span class="ok">' + p.predicted_people_total + ' 人</span>（' + p.date + ' ' +
+          (p.weekday_name || '') + '）');
+      }
+      onLive({
+        live: true,
+        title: 'INTENT · CANTEEN_ANALYSIS · ' + (stats ? '实时' : '预测'),
+        body: '后端实时统计与预测（AI 只解释已算好的结果）：',
+        list: list,
+        tail: (fc && fc.explanation && fc.explanation.text)
+          ? String(fc.explanation.text).slice(0, 120)
+          : '统计、预测与等待时间全部由 Python 完成。',
+        src: '实时接口：GET /api/canteens/stats' + (fc ? ' + /api/canteens/forecast' : '')
+      });
+    });
+  }
+
+  /** 技能缺口：/api/industry/gap（Python 集合运算 + 重要度加权），在线时替换内置快照。 */
+  function fetchSkillGapLive(question, onLive, onFail) {
+    var major = majorFromQuestion(question);
+    apiGet('/industry/gap?major=' + encodeURIComponent(major) + '&min_importance=1&top=20', AI_TIMEOUT_MS, function (data) {
+      if (!data || !data.summary) { onFail(); return; }
+      var m = adaptSkillGap(data, major);
+      var s = m.summary || {};
+      var urgent = (m.urgent || []).slice(0, 4).map(function (x) {
+        return x.name + '（重要度 ' + Number(x.imp).toFixed(2) + '）';
+      });
+      var coveredTop = (m.all || []).filter(function (x) { return x.covered; }).slice(0, 3)
+        .map(function (x) { return x.name + '（' + x.jobs + ' 岗）'; });
+      onLive({
+        live: true,
+        title: 'INTENT · SKILL_GAP · ' + escapeHtml(m.name),
+        body: '后端实时计算「' + escapeHtml(m.name) + '」的企业岗位技能 ↔ 课程覆盖：',
+        list: [
+          '岗位要求技能 <span class="hl">' + s.required + '</span> 项，课程覆盖 <span class="ok">' + s.covered +
+            '</span> 项，缺口 <span class="warn">' + s.missing + '</span> 项',
+          '覆盖率 <span class="warn">' + Number(s.rate || 0).toFixed(1) + '%</span>，重要度加权覆盖率 <span class="warn">' +
+            Number(s.weightedRate || 0).toFixed(1) + '%</span>',
+          '最紧急缺口：<span class="warn">' + (urgent.join('、') || '暂无') + '</span>',
+          '高需求已覆盖：' + (coveredTop.join('、') || '暂无')
+        ],
+        tail: '数据随「产教技能分析」面板里的专业下拉实时联动。',
+        src: '实时接口：GET /api/industry/gap?major=' + encodeURIComponent(m.name)
+      });
+    });
+  }
+
+  /** 岗位技能需求：/api/industry/skills（全校在招岗位 / 行业分布）+ /api/industry/gap（本专业薪资与缺口）。 */
+  function fetchJobMarketLive(question, onLive, onFail) {
+    var major = majorFromQuestion(question);
+    apiGetAll([
+      '/industry/skills?dimension=industry&top=8',
+      '/industry/gap?major=' + encodeURIComponent(major) + '&min_importance=1&top=20'
+    ], AI_TIMEOUT_MS, function (res) {
+      var skills = res[0], gap = res[1];
+      if (!skills && !gap) { onFail(); return; }
+      var list = [];
+      if (skills && skills.summary) {
+        list.push('在招岗位 <span class="hl">' + (skills.summary.job_count || 0) + '</span> 个 · 覆盖行业 <span class="hl">' +
+          (skills.summary.groups || 0) + '</span> 个 · 技能需求 <span class="hl">' + (skills.summary.skill_count || 0) + '</span> 项');
+        var top = (skills.groups || []).slice(0, 3).map(function (g) {
+          var pay = (g.avg_salary_min && g.avg_salary_max)
+            ? ' · 均薪 ' + Math.round(g.avg_salary_min) + '~' + Math.round(g.avg_salary_max)
+            : '';
+          return escapeHtml(g.name) + '（' + g.job_count + ' 岗' + pay + '）';
+        });
+        if (top.length) { list.push('需求最多：<span class="hl">' + top.join('、') + '</span>'); }
+      }
+      if (gap && gap.summary) {
+        var s = gap.summary;
+        var salary = (s.avg_salary_min && s.avg_salary_max)
+          ? Math.round(s.avg_salary_min) + ' ~ ' + Math.round(s.avg_salary_max) + ' 元/月'
+          : '暂无样本';
+        list.push('专业「' + escapeHtml(major) + '」相关岗位 <span class="hl">' + (s.job_count || 0) +
+          '</span> 个 · 覆盖 ' + (s.industry_count || 0) + ' 个行业');
+        list.push('该专业岗位平均薪资 <span class="ok">' + salary + '</span> · 技能缺口 <span class="warn">' +
+          (s.missing_skill_count || 0) + '</span> 项 / 要求 ' + (s.required_skill_count || 0) + ' 项');
+      }
+      onLive({
+        live: true,
+        title: 'INTENT · JOB_MARKET · ' + (skills ? '全校实时' : escapeHtml(major)),
+        body: '后端实时查询（岗位与薪资由 Python + SQLite 统计）：',
+        list: list,
+        tail: '可在「产教技能分析」面板切换专业，查看不同方向的岗位技能需求。',
+        src: '实时接口：GET /api/industry/skills' + (gap ? ' + /api/industry/gap' : '')
+      });
+    });
+  }
+
+  /** 教室利用率：/api/classrooms/available 用真实排课做「冲突差集」，得到占用 / 空闲。 */
+  function fetchRoomUtilizationLive(onLive, onFail) {
+    var term = termData();
+    apiGet('/classrooms/available?' + roomQuery(), AI_TIMEOUT_MS, function (data) {
+      if (!data || !data.summary) { onFail(); return; }
+      var s = data.summary, q = data.query || {};
+      var busy = s.occupied_count || 0;
+      var free = s.available_count || 0;
+      var total = s.candidate_count || (busy + free);
+      var util = total ? Math.round(busy / total * 1000) / 10 : null;
+      var list = [
+        '统计口径：<span class="hl">' + escapeHtml(q.semester || state.semester || '') + '</span> · <span class="hl">' +
+          (term.weekdayName || ('周' + (q.weekday || ''))) + '</span> 第 ' + (q.period_start || 1) + '-' +
+          (q.period_end || 12) + ' 节（排课冲突差集，Python 计算）',
+        '该时段占用 <span class="warn">' + busy + '</span> 间 · 空闲 <span class="ok">' + free + '</span> 间',
+        '可排课教室 <span class="hl">' + total + '</span> 间 · 利用率 <span class="warn">' +
+          (util === null ? '--' : util + '%') + '</span>'
+      ];
+      var rooms = (data.rooms || []).slice(0, 3).map(function (r) {
+        return escapeHtml(r.room_name + '（' + r.capacity + ' 人' + (r.has_projector ? ' · 有投影' : '') + '）');
+      });
+      if (rooms.length) { list.push('可预约空闲教室：' + rooms.join('、')); }
+      onLive({
+        live: true,
+        title: 'INTENT · ROOM_UTILIZATION · 实时',
+        body: '后端实时查询本学期真实排课（空闲 = 候选教室 − 冲突教室）：',
+        list: list,
+        tail: '整学期的楼栋级利用率趋势见左侧「教室使用」面板。',
+        src: '实时接口：GET /api/classrooms/available'
+      });
+    });
   }
 
   function ask(question) {
@@ -2261,48 +2593,37 @@ html,body{
         addMsg('ai', answerHtml(answer));
       }, 460 + Math.random() * 320);
     };
+    //: 在线请求要 4~5 秒，先补一行等待说明，别让用户以为页面卡了。
+    var offline = function () { done(localAnswer(text)); };
 
     //: 后端 /api/classrooms/search 只负责「找教室」（见 backend/routes.py 的接口说明）。
-    //: 若问题在离线知识库里已明确属于其它主题（食堂 / 技能缺口 / 岗位 / 利用率），
-    //: 就不再请求这个接口：既省掉一次注定失败的往返，也避免后端把「教室利用率」
-    //: 这类问题误判成 room_search 时，快捷按钮答成找教室。未命中任何主题时仍交给后端。
-    var localHit = pickKnowledge(text);
-    var useBackend = apiOnline && (!localHit || localHit.key === 'room_search');
-    if (useBackend) {
-      var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, 2600);
-      fetch(API_BASE + '/classrooms/search?explain=1&question=' + encodeURIComponent(text),
-        ctrl ? { signal: ctrl.signal } : undefined)
-        .then(function (r) { if (!r.ok) { throw new Error('bad status'); } return r.json(); })
-        .then(function (json) {
-          clearTimeout(timer);
-          var d = json && json.data;
-          if (!d || !d.summary) { throw new Error('empty'); }
-          var rooms = (d.rooms || []).slice(0, 3).map(function (r) {
-            return r.room_name + '（' + r.building + ' ' + r.floor + 'F · ' + r.capacity + ' 人）';
-          });
-          done({
-            live: true,
-            title: 'INTENT · ' + String(d.intent || 'room_search').toUpperCase(),
-            body: '后端实时查询结果（AI 只做解释）：',
-            list: [
-              '命中教室 <span class="hl">' + (d.total || 0) + '</span> 间',
-              '空闲 <span class="ok">' + d.summary.available_count + '</span> 间 · 占用 ' + d.summary.occupied_count + ' 间'
-            ].concat(rooms.map(function (r) { return '推荐：<span class="hl">' + escapeHtml(r) + '</span>'; })),
-            tail: (d.explanation && d.explanation.text) ? String(d.explanation.text).slice(0, 120) : '参数校验、查询与计算全部由 Python 完成。',
-            src: '实时接口：GET /api/classrooms/search'
-          });
-        })
-        .catch(function () { clearTimeout(timer); done(localAnswer(text)); });
-    } else {
-      done(localAnswer(text));
-    }
+    //: 命中本地主题后按主题走各自的后端实时接口（找教室 / 食堂 / 技能缺口 / 岗位 / 利用率）；
+    //: 未命中任何主题时交给后端 AI 判定意图，后端会说清「这不是找教室的问题」。
+    //: 只有后端真的连不上、或对应接口全部失败，才回落到内置快照（保留「离线示例」标注）。
+    var hit = pickKnowledge(text);
+    ensureOnline(function (online) {
+      if (!online) { offline(); return; }
+      setTypingHint(typing, LIVE_HINT);
+      if (!hit) {
+        fetchRoomSearch(text, done, function () { done(unsupportedAnswer()); }, offline);
+        return;
+      }
+      if (hit.key === 'room_search') {
+        fetchRoomSearch(text, done, function () { done(unsupportedAnswer()); }, offline);
+        return;
+      }
+      if (hit.key === 'canteen') { fetchCanteenLive(done, offline); return; }
+      if (hit.key === 'skill_gap') { fetchSkillGapLive(text, done, offline); return; }
+      if (hit.key === 'job_market') { fetchJobMarketLive(text, done, offline); return; }
+      if (hit.key === 'room_utilization') { fetchRoomUtilizationLive(done, offline); return; }
+      offline();
+    });
   }
 
   /** 探测后端：顺带一次性拉取学期清单，并让 AI 助手也切到在线模式。 */
   function probeBackend() {
     if (typeof fetch !== 'function') { return; }
-    apiGet('/meta/semesters', 2000, function (data) {
+    apiGet('/meta/semesters', PROBE_TIMEOUT_MS, function (data) {
       apiOnline = !!(data && data.semesters && data.semesters.length);
       state.apiOnline = apiOnline;
       if (apiOnline) {
@@ -2312,6 +2633,28 @@ html,body{
         applyStateCascade(state.snapshot);
       }
       applyApiState();
+    });
+  }
+
+  /** 提问时的后端可用性判定：已探测过就直接复用，否则按需再探一次。
+   *
+   * ``probeBackend()`` 是页面启动时探的（超时只有 ``PROBE_TIMEOUT_MS``）。如果用户
+   * 在后端刚启动 / 探测恰好抖动时提问，只看 ``apiOnline`` 会把实时接口错判成不可用、
+   * 于是所有快捷按钮都回落到内置快照。这里补一次轻量探测，代价只是一次元信息请求。
+   */
+  function ensureOnline(cb) {
+    if (apiOnline) { cb(true); return; }
+    if (typeof fetch !== 'function') { cb(false); return; }
+    apiGet('/meta/semesters', PROBE_TIMEOUT_MS, function (data) {
+      var online = !!(data && data.semesters && data.semesters.length);
+      if (online) {
+        apiOnline = true;
+        state.apiOnline = true;
+        state.semesters = data.semesters.slice();
+        renderSemesterOptions();
+        applyApiState();
+      }
+      cb(online);
     });
   }
 
