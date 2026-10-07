@@ -2,7 +2,7 @@
 
 **项目**：CampusAI 校园数据智能分析平台
 **仓库**：<https://github.com/zhu536/campus-ai.git>　**代码截止提交**：`4fc6dce`（2026-10-06）
-**文档状态**：v1.0 完整版　**编写日期**：2026-10-06
+**文档状态**：v1.0 完整版　**编写日期**：2026-10-07
 
 ## 摘要
 
@@ -1272,7 +1272,7 @@ if not api_key:
 
 ## 附录 E · 变更记录与证据强度说明
 
-**本文件版本与证据强度**：v1.0，2026-10-06 编写，对应末次提交 `4fc6dce`（提交总数 44）。**已实测**：`pytest -q`（三次，均 598 passed）、`pytest --collect-only`（全量与逐文件）、`git log` / `rev-list --count` / `show --stat` / `status` / `ls-files`、`frontend/index.html` 行数与字节数、`prompts/*.md` 空行与反斜杠统计、`tests/` 网络调用扫描。**原文档陈述**：CSV 行数与字节数、数据库 10651 行、SHA-256 一致性、陌生人测试各项结果、`docs/API.md` 的接口示例数字、环境版本号。**留空/未核实**：附录 C.2 的 1–6 项；`frontend/` 的运行时渲染效果（ECharts 实际绘制）未执行验证。**未执行**：`git commit`（按要求）；`make_data.py` / `import_data.py`（会覆盖数据文件）。
+**本文件版本与证据强度**：v1.0，2026-10-07 编写，对应末次提交 `4fc6dce`（提交总数 44）。**已实测**：`pytest -q`（三次，均 598 passed）、`pytest --collect-only`（全量与逐文件）、`git log` / `rev-list --count` / `show --stat` / `status` / `ls-files`、`frontend/index.html` 行数与字节数、`prompts/*.md` 空行与反斜杠统计、`tests/` 网络调用扫描。**原文档陈述**：CSV 行数与字节数、数据库 10651 行、SHA-256 一致性、陌生人测试各项结果、`docs/API.md` 的接口示例数字、环境版本号。**留空/未核实**：附录 C.2 的 1–6 项；`frontend/` 的运行时渲染效果（ECharts 实际绘制）未执行验证。**未执行**：`git commit`（按要求）；`make_data.py` / `import_data.py`（会覆盖数据文件）。
 
 ---
 
