@@ -2,7 +2,7 @@
 
 > 日期：2026-10-07　主题：写技术文档（Day06~19 过程沉淀，交付 ≤30 页 PDF）
 > 协作方式：Harness 写内容（大纲 → 正文 → 精简），人工负责审核与 PDF 转换交付
-> 记录核验来源：① Harness 三轮报告截图（本轮完整细节）② 本地会话摘要（C:\Users\Zqy\.dsh\storages\session_projcache\sessions\session-ae713630，确认 3 轮、314/1517 行、36 页、-16.4% 等关键数字）③ 项目文件实测（TECHNICAL_DOCUMENT.md 当前 837 行 / 128.1 KB）
+> 记录核验来源：1. Harness 三轮报告截图（本轮完整细节）2. 本地会话摘要（C:\Users\Zqy\.dsh\storages\session_projcache\sessions\session-ae713630，确认 3 轮、314/1517 行、36 页、-16.4% 等关键数字）3. 项目文件实测（TECHNICAL_DOCUMENT.md 当前 837 行 / 128.1 KB）
 
 ---
 
@@ -163,9 +163,9 @@ docs/TECHNICAL_DOCUMENT.md 现在转 PDF 有 36 页，比赛要求技术文档 �
 
 ## 图片素材（本日截图）
 
-| 文件名（放 `images/`） | 内容 | 状态 |
+| 文件名（放 `images/`） | 内容 
 |---|---|---|
-| `day19-outline-report.png` | Harness 第一轮大纲报告（14 章定位表 + 每章要点 + 引用文件 + 4 件事） | 已截 |
-| `day19-full-report.png` | Harness 第二轮正文完成报告（每章字数表 + 32 份文件清单 + 8 项留空标注） | 已截 |
-| `day19-compact-report.png` | Harness 第三轮精简报告（-16.4% + 结构核验 + 可再压缩建议） | 已截 |
-| `day19-pdf-26pages.png` | 成品 PDF 首页截图（体现 26 页、标题与目录结构） | 待截 |
+| `day19-outline-report.png` | Harness 第一轮大纲报告（14 章定位表 + 每章要点 + 引用文件 + 4 件事）
+| `day19-full-report.png` | Harness 第二轮正文完成报告（每章字数表 + 32 份文件清单 + 8 项留空标注）
+| `day19-compact-report.png` | Harness 第三轮精简报告（-16.4% + 结构核验 + 可再压缩建议） 
+| `day19-pdf-26pages.png` | 成品 PDF 首页截图（体现 26 页、标题与目录结构） 
