@@ -925,7 +925,7 @@ Day16 修复留下的三条规则（`Day16-稳定性检查.md:36,39,51`）：①
 
 ---
 
-## 11. Git 迭代与 AI 协作过程：`docs/ai-collaboration/` 里 Day06~18 的记录怎么证明开发过程
+## 11. Git 迭代与 AI 协作过程：`docs/ai-collaboration/` 里 Day01~19 的记录怎么证明开发过程
 
 **目标**：把「过程记录」讲成可核验的证据链，而不是叙事。
 
@@ -947,24 +947,24 @@ Day16 修复留下的三条规则（`Day16-稳定性检查.md:36,39,51`）：①
 
 ### 11.2 覆盖清单与达标情况
 
-`docs/ai-collaboration/` 共有 13 份开发记录（Day06 ～ Day18，**Day01–Day05 缺失**），另有 `CONV-01-对话日志.md` 与 `images/`（截图辅助材料）。按 `docs/ai-collaboration/README.md:63-77` 的自评表（列：逐字 Prompt / 真实 AI 回复 / 具体 Bug / 第二轮 Prompt）：Day06 ✅ / ⚠️摘要 / ✅ 400 校验实测 / —（单轮）；Day07 ✅两轮 / ⚠️摘要 / ✅ / ✅；Day08 ✅文字版 / ⚠️摘要 / ✅ / —；Day09 ✅三轮 / ⚠️部分 / ✅ / ✅含人工干预；Day10 ✅ / ✅有原文引用 / ✅有代码级根因 / —；Day11 ✅ / ✅ / ✅3 个真 Bug / —；Day12 ✅ / ✅ / ✅ / —；Day13 ✅六轮 / ⚠️部分 / ✅ / ✅含拍板决策；Day14 ✅两轮 / ⚠️部分 / ✅ / ✅；Day15 ✅三会话 / ✅ / ✅ / ✅；Day16 ✅两会话 / ✅ / ✅ / ✅含拍板决策；Day17 —（人工验证日，无 Harness 协作）；Day18 ✅单轮 / ✅有报告原文引用 / ✅（597→598 过期数字发现）/ —。
+`docs/ai-collaboration/` 共有 19 份开发记录（Day01 ～ Day19，**Day01–Day05 已于 2026-10-08 依据本地 AI 会话存档补写**），另有 `CONV-01-对话日志.md` 与 `images/`（截图辅助材料）。按 `docs/ai-collaboration/README.md:63-83` 的自评表（列：逐字 Prompt / 真实 AI 回复 / 具体 Bug / 第二轮 Prompt）：Day01 ✅发起轮原文 / —（回合未完成，如实标注）/ ✅ Key 泄露发现 / —；Day02 ✅ / ✅有关键段原文 / ✅ .env.example Key 泄露 / —；Day03 ✅ / ✅有原文引用 / ✅ DDL 提取/临时库验证 / —；Day04 ✅三轮 / ✅ / ✅技能覆盖缺口 / ✅三轮迭代；Day05 ✅ / ✅有原文引用 / ✅ WinError 32/沙箱 tmp_path / ✅含多轮自查；Day06 ✅ / ⚠️摘要 / ✅ 400 校验实测 / —（单轮）；Day07 ✅两轮 / ⚠️摘要 / ✅ / ✅；Day08 ✅文字版 / ⚠️摘要 / ✅ / —；Day09 ✅三轮 / ⚠️部分 / ✅ / ✅含人工干预；Day10 ✅ / ✅有原文引用 / ✅有代码级根因 / —；Day11 ✅ / ✅ / ✅3 个真 Bug / —；Day12 ✅ / ✅ / ✅ / —；Day13 ✅六轮 / ⚠️部分 / ✅ / ✅含拍板决策；Day14 ✅两轮 / ⚠️部分 / ✅ / ✅；Day15 ✅三会话 / ✅ / ✅ / ✅；Day16 ✅两会话 / ✅ / ✅ / ✅含拍板决策；Day17 —（人工验证日，无 Harness 协作）；Day18 ✅单轮 / ✅有报告原文引用 / ✅（597→598 过期数字发现）/ —；Day19 ✅三轮 / ✅有报告原文引用 / ✅（36 页超限/597 陈旧/转义不符）/ ✅三轮。
 
-**结论**：13 份记录中 12 份含**逐字 Prompt 原文**；`Day17` 为纯人工验证日，**如实标注无 Prompt**——与「不虚构」规矩自洽。Day10 / 11 / 12 三个核心功能各有一轮完整 Prompt；Day09 / 13 / 14 / 15 / 16 / 18 含多轮迭代链，覆盖「停止修改」「拍板决策」「真机验收再修」等真实引导过程。**Day01–Day05 缺失的处理方式**：仓库 Git 历史从 `398e797 chore: initialize project`（2026-09-20）起算，但 Day01–Day05 没有对应记录文件；记录规范要求「若这几天的过程还找得到痕迹就补写；**找不到就不要编**，如实标注为『无记录』」（`docs/ai-collaboration/README.md:84-89`）。
+**结论**：19 份记录中 18 份含**逐字 Prompt 原文**；`Day17` 为纯人工验证日，**如实标注无 Prompt**——与「不虚构」规矩自洽。Day10 / 11 / 12 三个核心功能各有一轮完整 Prompt；Day04 / 09 / 13 / 14 / 15 / 16 / 18 / 19 含多轮迭代链，覆盖「停止修改」「拍板决策」「真机验收再修」等真实引导过程。**Day01–Day05 的处理方式**：仓库 Git 历史从 `398e797 chore: initialize project`（2026-09-20）起算；原无对应记录文件，2026-10-08 依据本地 AI 会话存档（`C:\Users\Zqy\.dsh\sessions\--D-Projects--`）还原补写，每份含逐字 Prompt 与真实问题/验证记录；Day01 发起回合未完成、Day02 纯审查日无代码提交，均如实标注，未虚构任何 AI 回复（`docs/ai-collaboration/README.md:89-96`）。
 
 ### 11.3 Git 与记录的对应关系
 
-以下全部为**本文实测**（`git log` / `git rev-list --count` / `git ls-files --diff-filter=A`）。**总量**：提交总数 **44**；首次 `398e797`（2026-09-20）；末次 `4fc6dce docs: 添加Day18陌生环境复现记录`（2026-10-06）；工作树干净。
+以下全部为**本文实测**（`git log` / `git rev-list --count` / `git ls-files --diff-filter=A`）。**总量**：提交总数 **49**（2026-10-08 实测，含 Day01–05 补写 `05e9f91` 与本文档同步修订）；首次 `398e797`（2026-09-20）；末次即本提交（2026-10-08，见 `git log --oneline -1`）；工作树干净。
 
-**DayNN 记录与提交逐日对应**（按「新增该文件的提交」统计）：Day06 `e608004` 09-24 → Day07 `07da5a3` 09-25 → Day08 `c85bfa6` 09-26 → Day09 `529af05` 09-27 → Day10 `88a85cf` 09-28 → Day11 `2b7e178` 09-29 → Day12 `ae82711` 09-30 → Day13 `a445417` 10-01 → Day14 `77c3548` 10-02 → Day15 `85db4dc` 10-03 → Day16 `1440163` 10-04 → Day17 `da6131a` 10-05 → Day18 `4fc6dce` 10-06。
+**DayNN 记录与提交逐日对应**（按「新增该文件的提交」统计；Day01–05 记录文件由 2026-10-08 的 `05e9f91` 补写统一新增，括号内为其当日代码/文档提交）：Day01 `05e9f91`（`398e797`/`1d3f44b`/`e29096b`/`98efca5`，09-20，初始化与 Key 泄露修复）→ Day02 `05e9f91`（纯审查，无代码提交）→ Day03 `05e9f91`（`f4e13c7`，09-21）→ Day04 `05e9f91`（`8e6a81b`/`1f6d0b8`/`23c96ff`，09-22，三轮）→ Day05 `05e9f91`（`49877ea`，09-23）→ Day06 `e608004` 09-24 → Day07 `07da5a3` 09-25 → Day08 `c85bfa6` 09-26 → Day09 `529af05` 09-27 → Day10 `88a85cf` 09-28 → Day11 `2b7e178` 09-29 → Day12 `ae82711` 09-30 → Day13 `a445417` 10-01 → Day14 `77c3548` 10-02 → Day15 `85db4dc` 10-03 → Day16 `1440163` 10-04 → Day17 `da6131a` 10-05 → Day18 `4fc6dce` 10-06 → Day19 `a19aa49` 10-07。
 
-**13 份记录逐日连续，每天都有对应提交。** 但有两处**不对齐必须如实写出**：
+**19 份记录逐日连续，每天都有对应提交。** 但有两处**不对齐必须如实写出**：
 
 1. **Day15 的「记录提交」与「内容提交」不是同一个**：记录文件由 `85db4dc docs: tone down overpraise and fix contradictions in collaboration logs`（10-03）新增，而提交主题与 Day15 标题对应的是前一天（10-02）的 `be35f6a fix: stabilize core demo workflows and fix P0 boundary issues`——**修复动作发生在 10-02，记录落盘在 10-03**。
 2. **Day08 的记录是被改名，而非在该日新写**：`c85bfa6 docs: rename day 8 ai collaboration record to match naming convention`；`--diff-filter=A` 会把重命名计为「新增新路径」，因此不能据此宣称「Day08 记录于 09-26 撰写」。
 
 **其它实测细节**：`7660937` 与 `529af05` 在 09-27 拥有**完全相同**的提交主题；Day16 在 10-04 有两次提交（`1440163` 功能与验证 + `46ab0bb` 日志用时更正）。
 
-**阶段划分的诚实说明**：提交主题按类型分组为 `init 1 / docs 23 / data 3 / backend-API 5 / AI 7 / frontend 3 / fix 2`。**没有任何一条提交主题含「test」**——测试用例随功能/修复提交一起落库，**不存在独立的「测试阶段」提交**，本文不臆造该阶段。另有一个高价值细节：仓库存在以 **prompt 为主体**的提交类型（`7660937`、`529af05`），正好对应 `AGENTS.md:184-189` 的「Prompt 修改必须通过 Git 保留历史」（见 7.5 节）。
+**阶段划分的诚实说明**：提交主题按前缀统计为 `docs 25 / feat 9 / fix 7 / prompt 2 / data 2 / chore 1 / other 2`（`other` 为两条无前缀的中文日志提交，如 `46ab0bb`）。**没有任何提交主题以 `test:` 开头**——测试用例随功能/修复提交一起落库，**不存在独立的「测试阶段」提交**，本文不臆造该阶段。另有一个高价值细节：仓库存在以 **prompt 为主体**的提交类型（`7660937`、`529af05`），正好对应 `AGENTS.md:184-189` 的「Prompt 修改必须通过 Git 保留历史」（见 7.5 节）。
 
 ### 11.4 记录里的真实 Bug 证据
 
@@ -990,11 +990,11 @@ Day16 修复留下的三条规则（`Day16-稳定性检查.md:36,39,51`）：①
 
 如实列出，不粉饰：
 
-1. **部分 Agent 回复是摘要而非原文引用**：`docs/ai-collaboration/README.md:65-77` 的自评表里多处标为「⚠️ 摘要」（Day06 / Day07 / Day08 / Day09 / Day13 / Day14）。这是已知的、被自己记录下来的质量缺口。
-2. **Day01–Day05 无记录**：按规范要求保持「无记录」标注，不补编。
+1. **部分 Agent 回复是摘要而非原文引用**：`docs/ai-collaboration/README.md:63-83` 的自评表里多处标为「⚠️ 摘要」（Day06 / Day07 / Day08 / Day09 / Day13 / Day14）。这是已知的、被自己记录下来的质量缺口。
+2. **Day01–Day05 记录为后期补写**：原缺失，已于 2026-10-08 依据本地 AI 会话存档还原补写（`C:\Users\Zqy\.dsh\sessions\--D-Projects--`），提交 `05e9f91`；Day01 发起回合未完成、Day02 纯审查日无代码提交均如实标注，未虚构任何 AI 回复——补写行为本身如实记录，不与原记录混淆。
 3. **一条被改写的记录叙述**：`85db4dc` 的提交主题是 `docs: tone down overpraise and fix contradictions in collaboration logs`（调低过度赞誉、修正记录里的自相矛盾）——说明记录本身也经过了一轮自我审查，这一点可以在文档中如实提及。
 
-**本章证据**：`docs/ai-collaboration/README.md`、`docs/ai-collaboration/Day06-*` ～ `Day18-*`、`docs/ai-collaboration/CONV-01-对话日志.md`、`docs/ai-collaboration/images/`；本次实测 `git log` / `git rev-list --count HEAD` / `git show --stat` / `git status --short` / `git ls-files --diff-filter=A`。
+**本章证据**：`docs/ai-collaboration/README.md`、`docs/ai-collaboration/Day01-*` ～ `Day19-*`、`docs/ai-collaboration/CONV-01-对话日志.md`、`docs/ai-collaboration/images/`；本次实测 `git log` / `git rev-list --count HEAD` / `git show --stat` / `git status --short` / `git ls-files --diff-filter=A`。
 
 ---
 
@@ -1161,18 +1161,17 @@ if not api_key:
 |---|---|---|---|
 | 1 | `prompts/PROMPTS-README.md` 用例数陈旧 | 文档写「597 个用例」，实际 598（`prompts/PROMPTS-README.md:31`；`docs/ai-collaboration/Day18-…md:69,186`） | 一处数字漂移；评审若按该数字核对会疑惑 |
 | 2 | `prompts/PROMPTS-README.md` 的历史遗留描述与实测不符 | 文档声称有**转义残留**（`#`×9 / `.`×15 / `-`×26），实测 `prompts/*.md` 反斜杠数为 **0**；真正存在的是 `intent_parser.md` 的**多余空行**（323 行中 211 行为空行） | 文档可信度；`intent_parser.md` 直接阅读体验差 |
-| 3 | 部分协作记录的 Agent 回复是摘要而非逐字原文 | `docs/ai-collaboration/README.md:65-77` 自评表多处标注「⚠️ 摘要」 | 过程证据强度打折 |
-| 4 | Day01–Day05 协作记录缺失 | 仓库 2026-09-20 起算，但记录从 Day06（09-24）开始（`docs/ai-collaboration/README.md:84-89`） | 过程链不完整（按规范要求不编造，故如实标注缺失） |
-| 5 | 无认证 / 无鉴权 / 无速率限制；CORS 回显任意 Origin | `docs/PRD.md:137-162`（属非目标）、`backend/app.py:45-47` | 仅适合演示，不能直接上生产 |
-| 6 | 数据全部为模拟数据 | `meal_records.source` 默认 `simulated`（`docs/DATABASE.md:293-294`） | 结论的可迁移性未经真实数据验证；预测准确度不可外推 |
-| 7 | 单文件前端体量偏大 | `frontend/index.html` 实测 **2772 行 / 139,101 字节**，HTML+CSS+JS 全在一处（Day16 记录当时记为「2760 行」） | 可读性与多人协作成本 |
-| 8 | 预测方法单一 | 只有「均值 + 星期修正 + 时段修正」，无节假日 / 天气 / 考试周因素（`backend/forecast.py:14-25`、`docs/API.md:288`） | 精度上限明确但较低（**这是有意的设计取舍**） |
-| 9 | `courses.department` / `jobs.major` 是文本而非外键 | 专业匹配靠字符串相等（`docs/DATABASE.md:367`） | 专业名写法不一致会导致匹配遗漏 |
-| 10 | 依赖外网可达性 | pip 源、GitHub、AI 网关三项都可能不可达（`docs/ai-collaboration/Day18-…md:104,118,185`） | 复现与现场演示的稳定性风险 |
-| 11 | `AI_MAX_TOKENS` 偏小会导致解释静默降级 | 带推理的网关先花 reasoning token，JSON 被截断（`finish_reason=length`），表现为解释变成兜底文案（`README.md:158,429`） | 故障表现为「AI 不生效」而非报错，排查成本高 |
-| 12 | 三处 AI 调用点各写了一遍 HTTP 细节 | `backend/classroom.py:554`、`forecast.py:1093`、`industry.py:988` | 一致性靠人工维持；改动需同步三处 |
-| 13 | `backend/ai_parser.py` 中 `INTENTS` 被 import 但未在模块内使用 | 实测 grep：仅出现在 `ai_parser.py:42,46` 两处 import（真正的白名单在 `backend/validate.py:29-37`） | 无功能影响，但属未清理的冗余导入 |
-| 14 | 接口示例数字未在本文档实跑复核 | `coverage_rate = 0.5882` 等来自 `docs/API.md` 示例（**原文档陈述**） | 若被当作「本文档实测」引用会产生证据强度错配 |
+| 3 | 部分协作记录的 Agent 回复是摘要而非逐字原文 | `docs/ai-collaboration/README.md:63-83` 自评表多处标注「⚠️ 摘要」 | 过程证据强度打折 |
+| 4 | 无认证 / 无鉴权 / 无速率限制；CORS 回显任意 Origin | `docs/PRD.md:137-162`（属非目标）、`backend/app.py:45-47` | 仅适合演示，不能直接上生产 |
+| 5 | 数据全部为模拟数据 | `meal_records.source` 默认 `simulated`（`docs/DATABASE.md:293-294`） | 结论的可迁移性未经真实数据验证；预测准确度不可外推 |
+| 6 | 单文件前端体量偏大 | `frontend/index.html` 实测 **2772 行 / 139,101 字节**，HTML+CSS+JS 全在一处（Day16 记录当时记为「2760 行」） | 可读性与多人协作成本 |
+| 7 | 预测方法单一 | 只有「均值 + 星期修正 + 时段修正」，无节假日 / 天气 / 考试周因素（`backend/forecast.py:14-25`、`docs/API.md:288`） | 精度上限明确但较低（**这是有意的设计取舍**） |
+| 8 | `courses.department` / `jobs.major` 是文本而非外键 | 专业匹配靠字符串相等（`docs/DATABASE.md:367`） | 专业名写法不一致会导致匹配遗漏 |
+| 9 | 依赖外网可达性 | pip 源、GitHub、AI 网关三项都可能不可达（`docs/ai-collaboration/Day18-…md:104,118,185`） | 复现与现场演示的稳定性风险 |
+| 10 | `AI_MAX_TOKENS` 偏小会导致解释静默降级 | 带推理的网关先花 reasoning token，JSON 被截断（`finish_reason=length`），表现为解释变成兜底文案（`README.md:158,429`） | 故障表现为「AI 不生效」而非报错，排查成本高 |
+| 11 | 三处 AI 调用点各写了一遍 HTTP 细节 | `backend/classroom.py:554`、`forecast.py:1093`、`industry.py:988` | 一致性靠人工维持；改动需同步三处 |
+| 12 | `backend/ai_parser.py` 中 `INTENTS` 被 import 但未在模块内使用 | 实测 grep：仅出现在 `ai_parser.py:42,46` 两处 import（真正的白名单在 `backend/validate.py:29-37`） | 无功能影响，但属未清理的冗余导入 |
+| 13 | 接口示例数字未在本文档实跑复核 | `coverage_rate = 0.5882` 等来自 `docs/API.md` 示例（**原文档陈述**） | 若被当作「本文档实测」引用会产生证据强度错配 |
 
 ### 14.2 后续方向
 
@@ -1182,8 +1181,8 @@ if not api_key:
 
 1. **修正 `prompts/PROMPTS-README.md` 的两处过期描述**：把「597 个用例」改为可自动核验的来源或去掉硬编码数字（`:31`）；把「转义残留」改写为实测状态（空行问题，且只在 `intent_parser.md`）——同时保留「新增防退化断言」的建议，它的价值从「修问题」变成「**防未来退化**」，仍然值得加。
 2. **清理 `intent_parser.md` 的多余空行**，保留 `unescape_prompt()` 作向后兼容（`prompts/PROMPTS-README.md:63-71` 已提出该方案）。
-3. **补齐协作记录质量**：把自评表中标为「摘要」的 Agent 回复补成原文引用（Day06 / 07 / 08 / 09 / 13 / 14）；Day01–05 找不到痕迹就保持「无记录」标注。
-4. **清理 `ai_parser.py` 的冗余导入**（不足 #13）；**README 增加国内镜像源提示与 clone 失败备选方案**（`Day18:185` 已列该风险）。
+3. **补齐协作记录质量**：把自评表中标为「摘要」的 Agent 回复补成原文引用（Day06 / 07 / 08 / 09 / 13 / 14）。Day01–05 已按本地 AI 会话存档补写完成（2026-10-08，提交 `05e9f91`），不再列入待办。
+4. **清理 `ai_parser.py` 的冗余导入**（不足 #12）；**README 增加国内镜像源提示与 clone 失败备选方案**（`Day18:185` 已列该风险）。
 
 **第二梯队：提升数据与匹配的可靠性（中等成本，需注意既有约束）**
 
@@ -1230,7 +1229,7 @@ if not api_key:
 
 **`prompts/`（4 个运行时 Prompt + 1 份说明）**：`intent_parser.md`、`insight_generator.md`、`canteen_insight_generator.md`、`industry_insight_generator.md`、`PROMPTS-README.md`。
 
-**`docs/`**：`PRD.md`（需求与范围）、`API.md`（10 个接口字段级说明）、`DATABASE.md`（9 张表 + **DDL 唯一来源**）、`ai-collaboration/`（Day06～Day18 + CONV-01 + images/）、`TECHNICAL_DOCUMENT.md`（本文件）。
+**`docs/`**：`PRD.md`（需求与范围）、`API.md`（10 个接口字段级说明）、`DATABASE.md`（9 张表 + **DDL 唯一来源**）、`ai-collaboration/`（Day01～Day19 + CONV-01 + images/）、`TECHNICAL_DOCUMENT.md`（本文件）。
 
 **`tests/`（7 个测试文件 + 1 份固化解集）**：`test_api.py`、`test_classroom.py`、`test_forecast.py`、`test_industry.py`、`test_intent.py`、`test_time_resolver.py`、`test_import_data.py`、`conftest.py`、`golden_questions.json`（40 条问句）。
 
@@ -1272,7 +1271,7 @@ if not api_key:
 
 ## 附录 E · 变更记录与证据强度说明
 
-**本文件版本与证据强度**：v1.0，2026-10-07 编写，对应末次提交 `4fc6dce`（提交总数 44）。**已实测**：`pytest -q`（三次，均 598 passed）、`pytest --collect-only`（全量与逐文件）、`git log` / `rev-list --count` / `show --stat` / `status` / `ls-files`、`frontend/index.html` 行数与字节数、`prompts/*.md` 空行与反斜杠统计、`tests/` 网络调用扫描。**原文档陈述**：CSV 行数与字节数、数据库 10651 行、SHA-256 一致性、陌生人测试各项结果、`docs/API.md` 的接口示例数字、环境版本号。**留空/未核实**：附录 C.2 的 1–6 项；`frontend/` 的运行时渲染效果（ECharts 实际绘制）未执行验证。**未执行**：`git commit`（按要求）；`make_data.py` / `import_data.py`（会覆盖数据文件）。
+**本文件版本与证据强度**：v1.1，2026-10-07 编写、2026-10-08 修订（同步 Day01–05 补写与提交数），对应末次提交即本提交（提交总数 49）。**已实测**：`pytest -q`（三次，均 598 passed）、`pytest --collect-only`（全量与逐文件）、`git log` / `rev-list --count` / `show --stat` / `status` / `ls-files`、`frontend/index.html` 行数与字节数、`prompts/*.md` 空行与反斜杠统计、`tests/` 网络调用扫描。**原文档陈述**：CSV 行数与字节数、数据库 10651 行、SHA-256 一致性、陌生人测试各项结果、`docs/API.md` 的接口示例数字、环境版本号。**留空/未核实**：附录 C.2 的 1–6 项；`frontend/` 的运行时渲染效果（ECharts 实际绘制）未执行验证。**未执行**：`git commit`（按 Harness 要求，由人工执行）；`make_data.py` / `import_data.py`（会覆盖数据文件）。
 
 ---
 
