@@ -1,7 +1,7 @@
 # CampusAI 技术文档
 
 **项目**：CampusAI 校园数据智能分析平台
-**仓库**：<https://github.com/zhu536/campus-ai.git>　**代码截止提交**：`15bcb04`（2026-10-08）
+**仓库**：<https://github.com/CrestLune/campus-ai.git>　**代码截止提交**：`15bcb04`（2026-10-08）
 **文档状态**：v1.2 完整版　**编写日期**：2026-10-07（2026-10-08 修订：同步 Day01–05 补写、Day20 记录与提交数 50）
 
 ## 摘要
@@ -1007,7 +1007,7 @@ Day16 修复留下的三条规则（`Day16-稳定性检查.md:36,39,51`）：①
 `README.md:446-460` 的「命令速查」，也是陌生环境复现的唯一入口：
 
 ```powershell
-git clone https://github.com/zhu536/campus-ai.git; cd campus-ai
+git clone https://github.com/CrestLune/campus-ai.git; cd campus-ai
 py -3.12 -m venv .venv ;  .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env      # 填入 AI_API_KEY（不填也能跑离线演示）

@@ -10,7 +10,7 @@
 | **食堂分析与预测** | 历史人流、等待时间、拥挤度、高峰时段，以及未来几天午餐人流的简单预测（均值 + 星期修正 + 时段修正） |
 | **产教融合技能匹配** | 企业岗位技能需求 ↔ 专业课程技能覆盖：已覆盖技能、缺口技能、技能覆盖率与重要程度分布 |
 
-> 仓库：<https://github.com/zhu536/campus-ai.git>
+> 仓库：<https://github.com/CrestLune/campus-ai.git>
 
 ---
 
@@ -95,7 +95,7 @@ campus-ai/
 ## 4. 克隆仓库
 
 ```powershell
-git clone https://github.com/zhu536/campus-ai.git
+git clone https://github.com/CrestLune/campus-ai.git
 cd campus-ai
 ```
 
@@ -446,7 +446,7 @@ Stop-Process -Id <PID>
 ## 19. 从零到跑起来的命令速查
 
 ```powershell
-git clone https://github.com/zhu536/campus-ai.git
+git clone https://github.com/CrestLune/campus-ai.git
 cd campus-ai
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1

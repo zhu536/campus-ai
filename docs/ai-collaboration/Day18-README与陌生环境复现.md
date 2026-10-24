@@ -14,14 +14,14 @@
 
 ```text
 帮我给项目 D:\Projects\campus-ai 写一个 README.md，这个项目根目录现在还没有 README。
-项目是 CampusAI 校园数据智能分析平台，技术栈：Python 3.12 + Flask + SQLite，前端是原生 HTML/CSS/JS + ECharts，大模型走 OpenAI 兼容接口。GitHub 仓库 https://github.com/zhu536/campus-ai.git。
+项目是 CampusAI 校园数据智能分析平台，技术栈：Python 3.12 + Flask + SQLite，前端是原生 HTML/CSS/JS + ECharts，大模型走 OpenAI 兼容接口。GitHub 仓库 https://github.com/CrestLune/campus-ai.git。
 写之前先读 AGENTS.md、docs/PRD.md、docs/API.md、docs/DATABASE.md、docs/ai-collaboration/README.md，搞清楚项目再写，别编。
 目标：一个第一次拿到项目的人，10 分钟内能跑起来。要覆盖这些：
 1. 一句话简介 + 三个核心功能（AI 找教室 / 食堂分析与预测 / 产教融合技能匹配）
 2. 技术栈
 3. 目录结构
 4. 环境要求（Python 3.12、Git）
-5. 克隆仓库：git clone https://github.com/zhu536/campus-ai.git
+5. 克隆仓库：git clone https://github.com/CrestLune/campus-ai.git
 6. 建虚拟环境：py -3.12 -m venv .venv，PowerShell 激活
 7. 装依赖：pip install -r requirements.txt
 8. .env 配置：把 .env.example 复制成 .env 填 AI_API_KEY，再说明 AI_BASE_URL / AI_MODEL / AI_MAX_TOKENS / AI_TIMEOUT 四个变量含义（env.example 一共 5 个变量）
@@ -101,7 +101,7 @@ README 本身 18 项内容经逐条核对**没有发现编造项**（见下节�
 
 ### 5.1 拿源码：clone 失败 → 本地复制方案
 
-`git clone https://github.com/zhu536/campus-ai.git` 连续两次 **Connection was reset**（国内网络访问 GitHub 不稳定）→ 改用本地复制模拟"陌生人拿到源码"：
+`git clone https://github.com/CrestLune/campus-ai.git` 连续两次 **Connection was reset**（国内网络访问 GitHub 不稳定）→ 改用本地复制模拟"陌生人拿到源码"：
 
 ```powershell
 Copy-Item D:\Projects\campus-ai D:\Projects\campus-ai-test -Recurse
